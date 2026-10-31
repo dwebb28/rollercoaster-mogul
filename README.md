@@ -9,6 +9,13 @@ A browser-based theme park management game. Sign in with Google or GitHub, lay o
 - **Shops:** food, drinks and restrooms. Guests get hungry, thirsty and need the restroom, and they leave unhappy if they can't find what they need.
 - **Scenery:** trees, flowers and fountains make nearby guests happier. Benches let tired guests rest. Litter bins cut down on litter.
 - **Staff:** janitors sweep litter. Mechanics fix rides that break down.
+- **Crime and security:** some visitors are criminals. Pickpockets steal guests' cash, brawlers assault guests, and robbers hit your shops' and rides' takings. On rare occasions an assault is fatal, which costs legal fees and drives witnesses out of the park. Crimes lower the park's **Safety** score, which hurts your rating and the number of new visitors. To fight back:
+  - **Security guards** deter crime nearby, chase suspects and recover stolen money.
+  - **Cameras** deter crime and identify culprits, who can be stopped at the gate.
+  - **Lamp posts** cancel the higher crime rate at dusk.
+  - **First aid posts** treat injured guests and make fatal assaults less likely.
+
+  You can tune all of this in `CRIME` in `public/js/catalog.js`.
 - **Economy:** you set the entrance fee and the price of every ride and shop. If prices are too high, guests refuse to pay. You pay staff wages and ride upkeep every day.
 - **Guests:** each guest has their own thrill tolerance, budget and needs. Click a guest to see what they're thinking.
 - **Goals and leaderboard:** complete milestones and rank by park value. Your park autosaves to your account.

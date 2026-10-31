@@ -76,6 +76,7 @@ export class Renderer {
   render(park, view, dt) {
     const { ctx } = this;
     const t = view.time;
+    this.dusk = view.dayProgress > 0.75 ? Math.sin(((view.dayProgress - 0.75) / 0.25) * Math.PI) : 0;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#2f5d3a';
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -110,7 +111,7 @@ export class Renderer {
     // Dusk tint toward the end of each day.
     if (view.dayProgress > 0.75) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      const a = Math.sin(((view.dayProgress - 0.75) / 0.25) * Math.PI) * 0.22;
+      const a = this.dusk * 0.22;
       ctx.fillStyle = `rgba(40, 30, 90, ${a})`;
       ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
@@ -502,6 +503,36 @@ export class Renderer {
         ctx.beginPath(); ctx.ellipse(c.x, c.y - 1, 5, 2.5, 0, 0, Math.PI); ctx.fill();
         break;
       }
+      case 'lamp': {
+        ctx.fillStyle = '#2f3540';
+        ctx.fillRect(c.x - 1.5, c.y - 34, 3, 34);
+        ctx.fillRect(c.x - 4, c.y - 2, 8, 2);
+        if (this.dusk > 0) {
+          const glow = ctx.createRadialGradient(c.x, c.y - 36, 2, c.x, c.y - 30, 40);
+          glow.addColorStop(0, `rgba(255, 225, 140, ${0.55 * this.dusk})`);
+          glow.addColorStop(1, 'rgba(255, 225, 140, 0)');
+          ctx.fillStyle = glow;
+          ctx.beginPath(); ctx.ellipse(c.x, c.y - 10, 44, 30, 0, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.fillStyle = this.dusk > 0 ? '#ffe9a0' : '#f4f1e6';
+        ctx.beginPath(); ctx.arc(c.x, c.y - 37, 4, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+      case 'camera': {
+        ctx.fillStyle = '#5c6470';
+        ctx.fillRect(c.x - 1.5, c.y - 30, 3, 30);
+        ctx.fillStyle = '#e8ecf0';
+        ctx.save();
+        ctx.translate(c.x, c.y - 31);
+        ctx.rotate(Math.sin(t * 0.8 + o.id) * 0.5);
+        ctx.fillRect(-2, -4, 12, 7);
+        ctx.fillStyle = '#20252b';
+        ctx.fillRect(9, -3, 3, 5);
+        ctx.restore();
+        ctx.fillStyle = Math.floor(t * 2) % 2 ? '#ff3b30' : '#7a1d18';
+        ctx.beginPath(); ctx.arc(c.x + 1, c.y - 35, 1.5, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
       default:
         this.box(o.x + 0.2, o.y + 0.2, 0.6, 0.6, 10, '#999');
     }
@@ -538,6 +569,19 @@ export class Renderer {
       pos = { x: p.x + Math.cos(a) * 0.3, y: p.y + Math.sin(a) * 0.3 };
     }
     this.person(pos, g.shirt, g.state === 'walk' ? t : 0, g.id, { sitting: g.state === 'sit', selected });
+    const s = P(pos.x, pos.y);
+    const { ctx } = this;
+    if (g.crime && g.spotted) {
+      // Identified suspect: red marker overhead.
+      ctx.fillStyle = '#e5484d';
+      ctx.beginPath(); ctx.moveTo(s.x - 4, s.y - 30); ctx.lineTo(s.x + 4, s.y - 30); ctx.lineTo(s.x, s.y - 24); ctx.fill();
+    } else if (g.injured) {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(s.x - 4, s.y - 31, 8, 8);
+      ctx.fillStyle = '#e5484d';
+      ctx.fillRect(s.x - 1, s.y - 30, 2, 6);
+      ctx.fillRect(s.x - 3, s.y - 28, 6, 2);
+    }
   }
 
   drawStaff(s, p, t, selected) {

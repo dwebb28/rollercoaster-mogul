@@ -50,6 +50,7 @@ export const STALLS = {
   lemonade: { name: 'Lemonade Stand', w: 1, h: 1, cost: 300, sells: 'drink', price: 2, unitCost: 0.5, upkeep: 8, icon: '🍋', color: '#f5d33f' },
   soda: { name: 'Fizz Pop', w: 1, h: 1, cost: 350, sells: 'drink', price: 3, unitCost: 0.7, upkeep: 8, icon: '🥤', color: '#4aa3df' },
   restroom: { name: 'Restrooms', w: 1, h: 1, cost: 600, sells: 'restroom', price: 0, unitCost: 0, upkeep: 12, icon: '🚻', color: '#8fa3b8' },
+  firstaid: { name: 'First Aid Post', w: 1, h: 1, cost: 700, sells: 'firstaid', price: 0, unitCost: 0, upkeep: 20, icon: '⛑️', color: '#d64545' },
 };
 
 export const SCENERY = {
@@ -59,11 +60,35 @@ export const SCENERY = {
   fountain: { name: 'Fountain', w: 2, h: 2, cost: 400, beauty: 10 },
   bench: { name: 'Bench', w: 1, h: 1, cost: 50, beauty: 0, seat: true },
   bin: { name: 'Litter Bin', w: 1, h: 1, cost: 40, beauty: 0, bin: true },
+  lamp: { name: 'Lamp Post', w: 1, h: 1, cost: 60, beauty: 1, lamp: true },
+  camera: { name: 'Security Camera', w: 1, h: 1, cost: 300, beauty: 0, camera: true },
 };
 
 export const STAFF = {
   janitor: { name: 'Janitor', wage: 30, color: '#3fa34d' },
   mechanic: { name: 'Mechanic', wage: 45, color: '#e07b24' },
+  guard: { name: 'Security Guard', wage: 55, color: '#2b4c7e' },
+};
+
+/** Crime balancing. Probabilities are per arriving guest / per attempt. */
+export const CRIME = {
+  baseRate: 0.035, // share of arriving guests who are criminals
+  lowRatingRate: 0.03, // extra share when the park rating is below 400
+  types: { pickpocket: 0.6, brawler: 0.3, robber: 0.1 },
+  guardDeterRadius: 4,
+  guardDeterFactor: 0.15, // attempt chance multiplier with a guard close by
+  guardChaseRadius: 8,
+  cameraRadius: 5,
+  cameraDeterFactor: 0.6,
+  cameraSpotChance: 0.8,
+  lampRadius: 3,
+  daytimeFactor: 0.6, // crime is less likely in daylight (or under lamps at dusk)
+  gateArrestChance: 0.5, // spotted criminals stopped when leaving
+  homicideChance: 0.03, // chance an assault turns fatal
+  firstAidHomicideFactor: 0.4,
+  homicideLegalCost: 2000,
+  safetyHit: { theft: 2, assault: 6, heist: 8, homicide: 40 },
+  safetyRecovery: 0.03, // safety points per game-second
 };
 
 export function itemDef(kind) {
@@ -86,4 +111,6 @@ export const OBJECTIVES = [
   { id: 'guests-100', text: 'Have 100 guests in the park', test: (s) => s.guests >= 100 },
   { id: 'value-75k', text: 'Reach a park value of $75,000', test: (s) => s.value >= 75000 },
   { id: 'rating-800', text: 'Reach a park rating of 800', test: (s) => s.rating >= 800 },
+  { id: 'guard', text: 'Hire a security guard', test: (s) => s.guards >= 1 },
+  { id: 'arrests-10', text: 'Make 10 arrests', test: (s) => s.arrests >= 10 },
 ];

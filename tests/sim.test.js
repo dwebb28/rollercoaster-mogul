@@ -133,3 +133,100 @@ test('deserialize rejects malformed or tampered saves', () => {
   assert.equal(p.entranceFee, 100);
   assert.equal(p.rating, 999);
 });
+
+// ---------------------------------------------------------------------------
+// Crime & security
+// ---------------------------------------------------------------------------
+
+/** Places a criminal guest of `type` on the path at (x, y). */
+function plantCriminal(p, type, x = 20, y = 26) {
+  run(p, 1);
+  const g = p.guests[0] ?? (run(p, 30), p.guests[0]);
+  Object.assign(g, { crime: type, crimeT: 0, x, y, nx: x, ny: y, t: 0, state: 'walk', leaving: false, target: null, route: null });
+  return g;
+}
+
+function crowdAround(p, x, y, except) {
+  for (const v of p.guests) {
+    if (v === except) continue;
+    Object.assign(v, { x, y, nx: x, ny: y, t: 0, state: 'sit', busy: 30, cash: 50 });
+  }
+}
+
+test('pickpockets steal from nearby guests and lower safety', () => {
+  const p = samplePark(21);
+  run(p, 60);
+  const thief = plantCriminal(p, 'pickpocket');
+  crowdAround(p, 20, 26, thief);
+  p.time = 0; // daytime
+  let tries = 0;
+  while (p.stats.crimes === 0 && tries++ < 400) { thief.crimeT = 0; Sim.step(p, 0.1); }
+  assert.ok(p.stats.crimes >= 1, 'a theft happened');
+  assert.equal(p.incidents.find((i) => i.type !== 'arrest').type, 'theft');
+  assert.ok(thief.loot > 0);
+  assert.ok(p.safety < 100);
+});
+
+test('guards deter crime and arrest identified criminals', () => {
+  const quiet = (guards, seed) => {
+    const p = samplePark(seed);
+    for (let i = 0; i < guards; i++) Sim.hire(p, 'guard');
+    run(p, 600);
+    return p;
+  };
+  let unguarded = 0, guarded = 0, arrests = 0;
+  for (const seed of [31, 32, 33]) {
+    unguarded += quiet(0, seed).stats.crimes;
+    const g = quiet(4, seed);
+    guarded += g.stats.crimes;
+    arrests += g.stats.arrests;
+  }
+  assert.ok(unguarded > 0, 'crime happens without security');
+  assert.ok(guarded < unguarded, `guards reduce crime (${guarded} vs ${unguarded})`);
+  assert.ok(arrests > 0, 'guards make arrests');
+});
+
+test('arrested robbers return stolen money', () => {
+  const p = samplePark(41);
+  run(p, 60);
+  const robber = plantCriminal(p, 'robber');
+  const guard = Sim.hire(p, 'guard').staff;
+  const cashBefore = p.cash;
+  Object.assign(robber, { loot: 500, heistLoot: true, spotted: true, leaving: true });
+  Object.assign(guard, { x: 20, y: 27, nx: 20, ny: 27, t: 0 });
+  run(p, 5);
+  assert.equal(p.stats.arrests, 1);
+  assert.ok(p.cash >= cashBefore + 500 - 200, 'loot recovered (minus any daily costs)');
+  assert.equal(p.incidents[0].type, 'arrest');
+});
+
+test('assaults injure guests, who seek first aid', () => {
+  const p = samplePark(51);
+  assert.ok(Sim.build(p, 'firstaid', 21, 25).ok);
+  run(p, 60);
+  const victim = p.guests.find((g) => g.state === 'walk' && !g.crime);
+  victim.injured = true;
+  victim.decideIn = 0;
+  let healed = false;
+  for (let i = 0; i < 1200 && !healed; i++) { Sim.step(p, 0.1); healed = !victim.injured; }
+  assert.ok(healed || victim.leaving, 'injured guest either treated or went home');
+});
+
+test('crime state survives save/load', () => {
+  const p = samplePark(61);
+  run(p, 60);
+  const g = plantCriminal(p, 'brawler');
+  g.spotted = true;
+  p.incidents.unshift({ type: 'assault', text: 'x', day: 1 });
+  p.safety = 42;
+  const q = Sim.deserialize(JSON.parse(JSON.stringify(Sim.serialize(p))));
+  assert.equal(q.safety, 42);
+  assert.equal(q.incidents[0].type, 'assault');
+  const g2 = q.guests.find((x) => x.id === g.id);
+  assert.equal(g2.crime, 'brawler');
+  assert.equal(g2.spotted, true);
+  // Unknown crime types from a tampered save are dropped.
+  const data = Sim.serialize(p);
+  data.guests[0].crime = 'arson';
+  assert.equal(Sim.deserialize(data).guests[0].crime, null);
+});

@@ -3,7 +3,7 @@
 
 import {
   GRID, DAY_SECONDS, START_CASH, PATH_COST, REFUND_RATE,
-  RIDES, STALLS, SCENERY, STAFF, OBJECTIVES, itemDef, itemCategory,
+  RIDES, STALLS, SCENERY, STAFF, OBJECTIVES, CRIME, itemDef, itemCategory,
 } from './catalog.js';
 
 export const TILE = { GRASS: 0, PATH: 1, ENTRANCE: 2 };
@@ -47,14 +47,16 @@ export function createPark(name = 'New Park', seed = Date.now()) {
     entranceFee: 10,
     open: true,
     rating: 500,
+    safety: 100,
     nextId: 1,
     tiles: new Array(GRID * GRID).fill(TILE.GRASS),
     litter: new Array(GRID * GRID).fill(0),
     objects: [],
     guests: [],
     staff: [],
-    stats: { totalGuests: 0, peakGuests: 0, today: newLedger(), history: [] },
+    stats: { totalGuests: 0, peakGuests: 0, arrests: 0, crimes: 0, today: newLedger(), history: [] },
     thoughts: [],
+    incidents: [],
     objectives: [],
   };
   park.tiles[idx(ENTRANCE.x, ENTRANCE.y)] = TILE.ENTRANCE;
@@ -74,7 +76,7 @@ export function createPark(name = 'New Park', seed = Date.now()) {
 }
 
 function newLedger() {
-  return { income: 0, expenses: 0, admissions: 0, rides: 0, shops: 0, wages: 0, upkeep: 0, construction: 0 };
+  return { income: 0, expenses: 0, admissions: 0, rides: 0, shops: 0, wages: 0, upkeep: 0, construction: 0, crime: 0, crimeCount: 0 };
 }
 
 /** Rebuilds transient lookup tables (anything prefixed with `_`). */
@@ -145,6 +147,7 @@ export function deserialize(data) {
   park.entranceFee = Math.round(num(data.entranceFee, 0, 100, 10));
   park.open = data.open !== false;
   park.rating = num(data.rating, 0, 999, 500);
+  park.safety = num(data.safety, 0, 100, 100);
   park.tiles = [...data.tiles].map(Number);
   park.litter = [...data.litter].map(Number);
   if (park.tiles[idx(ENTRANCE.x, ENTRANCE.y)] !== TILE.ENTRANCE) throw new Error('entrance missing');
@@ -181,6 +184,13 @@ export function deserialize(data) {
       nausea: num(g.nausea, 0, 100), pref: num(g.pref, 1, 10, 5), thrift: num(g.thrift, 0, 1, 0.5),
       timeIn: num(g.timeIn, 0, 1e6), leaving: g.leaving === true,
       rides: num(g.rides, 0, 1e4),
+      crime: CRIME.types[g.crime] ? g.crime : null,
+      crimeT: num(g.crimeT, 0, 1e4, 20),
+      crimes: num(g.crimes, 0, 100),
+      loot: num(g.loot, 0, 1e7),
+      heistLoot: g.heistLoot === true,
+      spotted: g.spotted === true,
+      injured: g.injured === true,
       // Riders/queuers resume walking; ride state is not persisted.
       state: 'walk',
     });
@@ -195,18 +205,26 @@ export function deserialize(data) {
   const st = data.stats || {};
   park.stats.totalGuests = num(st.totalGuests, 0, 1e9);
   park.stats.peakGuests = num(st.peakGuests, 0, 1e6);
+  park.stats.arrests = num(st.arrests, 0, 1e9);
+  park.stats.crimes = num(st.crimes, 0, 1e9);
   if (st.today && typeof st.today === 'object') {
     for (const k of Object.keys(park.stats.today)) park.stats.today[k] = num(st.today[k], -1e10, 1e10, 0);
   }
   if (Array.isArray(st.history)) {
     park.stats.history = st.history.slice(-30).map((h) => ({
       day: num(h?.day, 0, 1e7), income: num(h?.income, -1e10, 1e10), expenses: num(h?.expenses, -1e10, 1e10),
-      guests: num(h?.guests, 0, 1e6),
+      guests: num(h?.guests, 0, 1e6), crimes: num(h?.crimes, 0, 1e6),
     }));
   }
   if (Array.isArray(data.thoughts)) {
     park.thoughts = data.thoughts.slice(0, 25).map((t) => ({
       text: String(t?.text ?? '').slice(0, 120), who: String(t?.who ?? '').slice(0, 20), day: num(t?.day, 0, 1e7),
+    }));
+  }
+  if (Array.isArray(data.incidents)) {
+    park.incidents = data.incidents.slice(0, 30).map((t) => ({
+      type: ['theft', 'assault', 'heist', 'homicide', 'arrest'].includes(t?.type) ? t.type : 'theft',
+      text: String(t?.text ?? '').slice(0, 160), day: num(t?.day, 0, 1e7),
     }));
   }
   if (Array.isArray(data.objectives)) {
@@ -220,10 +238,10 @@ export function deserialize(data) {
 
 function createEmpty() {
   return {
-    version: 1, name: '', rngState: 1, time: 0, cash: 0, entranceFee: 10, open: true, rating: 500, nextId: 1,
+    version: 1, name: '', rngState: 1, time: 0, cash: 0, entranceFee: 10, open: true, rating: 500, safety: 100, nextId: 1,
     tiles: [], litter: [], objects: [], guests: [], staff: [],
-    stats: { totalGuests: 0, peakGuests: 0, today: newLedger(), history: [] },
-    thoughts: [], objectives: [],
+    stats: { totalGuests: 0, peakGuests: 0, arrests: 0, crimes: 0, today: newLedger(), history: [] },
+    thoughts: [], incidents: [], objectives: [],
   };
 }
 
@@ -273,6 +291,9 @@ export function parkStats(park) {
   for (const g of park.guests) happy += g.happy;
   return {
     rides, coasters, stalls, broken, excitement, beauty, litter,
+    guards: park.staff.filter((s) => s.role === 'guard').length,
+    arrests: park.stats.arrests,
+    safety: Math.round(park.safety),
     guests: park.guests.length,
     avgHappy: park.guests.length ? happy / park.guests.length : 0,
     rating: Math.round(park.rating),
@@ -407,7 +428,7 @@ export function fire(park, id) {
 }
 
 function newStaff(role, id, x, y) {
-  return { id, role, name: '', x, y, nx: x, ny: y, lx: x, ly: y, t: 0, route: null, task: null, busy: 0 };
+  return { id, role, name: '', x, y, nx: x, ny: y, lx: x, ly: y, t: 0, route: null, task: null, busy: 0, chase: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +512,7 @@ export function step(park, dt) {
     park._guestById = new Map(park.guests.map((g) => [g.id, g]));
   }
 
+  park.safety = Math.min(100, park.safety + CRIME.safetyRecovery * dt);
   park._slowT = (park._slowT || 0) + dt;
   if (park._slowT >= 1) {
     park._slowT = 0;
@@ -508,7 +530,8 @@ function spawnGuests(park, dt) {
   const feeF = clamp(1 - (park.entranceFee - (6 + s.excitement * 0.8)) / 40, 0.03, 1.3);
   const cap = Math.min(MAX_GUESTS, 30 + s.rides * 35 + s.stalls * 5);
   const crowd = park.guests.length >= cap ? 0.05 : 1;
-  park._spawnAcc = (park._spawnAcc || 0) + attraction * ratingF * feeF * crowd * dt;
+  const safetyF = 0.5 + park.safety / 200;
+  park._spawnAcc = (park._spawnAcc || 0) + attraction * ratingF * feeF * safetyF * crowd * dt;
   while (park._spawnAcc >= 1) {
     park._spawnAcc -= 1;
     spawnGuest(park);
@@ -519,6 +542,7 @@ function newGuestStats() {
   return {
     state: 'walk', target: null, route: null, busy: 0, queueT: 0, queueAt: -1,
     thought: '', thoughtT: 0, litterT: 0, decideIn: 0, ridden: {}, rides: 0, gone: false, leaving: false,
+    crime: null, crimeT: 0, crimes: 0, loot: 0, heistLoot: false, heist: null, spotted: false, injured: false,
   };
 }
 
@@ -543,6 +567,15 @@ function spawnGuest(park) {
     timeIn: 0,
   };
   if (!walkable(park, idx(g.nx, g.ny))) return;
+  const crimeRate = CRIME.baseRate + (park.rating < 400 ? CRIME.lowRatingRate : 0);
+  if (rand(park) < crimeRate) {
+    let r = rand(park);
+    for (const [type, share] of Object.entries(CRIME.types)) {
+      g.crime = type;
+      if ((r -= share) < 0) break;
+    }
+    g.crimeT = 15 + rand(park) * 30;
+  }
   if (park.entranceFee) earn(park, park.entranceFee, 'admissions');
   park.guests.push(g);
   park._guestById.set(g.id, g);
@@ -602,6 +635,12 @@ function updateGuest(park, g, dt) {
   if (g.litterT > 0) {
     g.litterT -= dt;
     if (g.litterT <= 0) dropLitter(park, g.x, g.y);
+  }
+
+  if (g.heist && !g.target) { g.heist = null; g.crimeT = 10; } // heist target became unreachable
+  if (g.crime && !g.leaving && g.state === 'walk') {
+    g.crimeT -= dt;
+    if (g.crimeT <= 0) planCrime(park, g);
   }
 
   if (g.state === 'walk') walkGuest(park, g, dt);
@@ -681,7 +720,15 @@ function walkGuest(park, g, dt) {
 }
 
 function onArrive(park, g, here) {
-  if (park.tiles[here] === TILE.ENTRANCE && g.leaving) { g.gone = true; return; }
+  if (park.tiles[here] === TILE.ENTRANCE && g.leaving) {
+    if (g.crime && g.spotted && rand(park) < CRIME.gateArrestChance) arrest(park, g, 'park security at the gate');
+    g.gone = true;
+    return;
+  }
+  if (park.safety < 50 && !g.crime && rand(park) < 0.01) {
+    g.happy = Math.max(0, g.happy - 3);
+    think(park, g, "I don't feel safe in this park.");
+  }
   const litter = park.litter[here];
   if (litter) {
     g.happy = Math.max(0, g.happy - litter * 0.8);
@@ -741,6 +788,7 @@ function decide(park, g, here) {
 const NEED_THOUGHTS = {
   restroom: "I can't find a restroom!",
   drink: "I can't find anything to drink.",
+  firstaid: "I'm hurt and there's no first aid here!",
   food: "I can't find anything to eat.",
 };
 
@@ -751,7 +799,8 @@ function pickGoal(park, g, here) {
   if (g.cash < 1 && rand(park) < 0.4) return startLeaving(park, g, "I'm out of money.");
 
   let need = null;
-  if (g.bladder > 70) need = 'restroom';
+  if (g.injured) need = 'firstaid';
+  else if (g.bladder > 70) need = 'restroom';
   else if (g.thirst > 65) need = 'drink';
   else if (g.hunger > 65) need = 'food';
   else if (g.energy < 35) need = 'seat';
@@ -775,6 +824,7 @@ function pickGoal(park, g, here) {
     if (score > bestScore) { bestScore = score; best = obj; bestGoal = goal; }
   }
 
+  if (!best && need === 'firstaid') return startLeaving(park, g, "I'm hurt. I need to get out of here.");
   if (!best) {
     if (need && NEED_THOUGHTS[need]) { g.happy = Math.max(0, g.happy - 3); think(park, g, NEED_THOUGHTS[need]); }
     else if (!need && rand(park) < 0.1) think(park, g, "There isn't much to do here.");
@@ -792,6 +842,7 @@ function rideValue(def, g) {
 function interact(park, g, obj, here) {
   g.target = null;
   g.route = null;
+  if (g.heist === obj.id) return commitHeist(park, g, obj);
   const ride = RIDES[obj.kind];
   const stall = STALLS[obj.kind];
   if (ride) {
@@ -827,6 +878,11 @@ function interact(park, g, obj, here) {
     if (stall.sells === 'food') { g.hunger = 0; g.happy = Math.min(100, g.happy + 5); g.litterT = 4 + rand(park) * 10; }
     if (stall.sells === 'drink') { g.thirst = 0; g.bladder += 20; g.happy = Math.min(100, g.happy + 4); g.litterT = 4 + rand(park) * 10; }
     if (stall.sells === 'restroom') { g.bladder = 0; g.busy = 4; g.happy = Math.min(100, g.happy + 4); }
+    if (stall.sells === 'firstaid') {
+      g.busy = 6;
+      if (g.injured) { g.injured = false; g.happy = Math.min(100, g.happy + 15); think(park, g, 'The first aid team patched me up.'); }
+      g.nausea = 0;
+    }
   } else if (SCENERY[obj.kind]?.seat) {
     g.state = 'sit';
     g.busy = 8;
@@ -894,7 +950,7 @@ function updateStaff(park, s, dt) {
     if (s.busy <= 0) finishStaffJob(park, s);
     return;
   }
-  if (!moveActor(park, s, dt, STAFF_SPEED)) return;
+  if (!moveActor(park, s, dt, s.chase ? STAFF_SPEED * 1.5 : STAFF_SPEED)) return;
   const here = idx(s.x, s.y);
   if (!walkable(park, here)) { // path was removed underneath them
     s.x = s.nx = ENTRANCE.x; s.y = s.ny = ENTRANCE.y - 1; s.t = 0; s.route = null;
@@ -912,6 +968,8 @@ function updateStaff(park, s, dt) {
       }
       if (best >= 0) s.route = traceRoute(prev, here, best);
     }
+  } else if (s.role === 'guard') {
+    if (guardStep(park, s, here)) return;
   } else if (s.role === 'mechanic') {
     let ride = s.task ? getObject(park, s.task) : null;
     if (!ride || !ride.broken) {
@@ -953,7 +1011,8 @@ function updateRating(park) {
   const s = parkStats(park);
   const happy = s.guests ? s.avgHappy : 60;
   const target = 120 + happy * 4 + Math.min(s.rides, 10) * 28 + Math.min(s.beauty, 120)
-    - s.litter * 4 - s.broken * 60 - (s.stalls === 0 && s.guests > 10 ? 80 : 0);
+    - s.litter * 4 - s.broken * 60 - (s.stalls === 0 && s.guests > 10 ? 80 : 0)
+    - (100 - park.safety) * 3;
   park.rating += (clamp(target, 0, 999) - park.rating) * 0.08;
 }
 
@@ -974,10 +1033,186 @@ function endDay(park, finishedDay) {
     if (def && o.open) spend(park, def.upkeep, 'upkeep');
   }
   const t = park.stats.today;
-  park.stats.history.push({ day: finishedDay, income: Math.round(t.income), expenses: Math.round(t.expenses), guests: park.guests.length });
+  park.stats.history.push({ day: finishedDay, income: Math.round(t.income), expenses: Math.round(t.expenses), guests: park.guests.length, crimes: t.crimeCount });
   if (park.stats.history.length > 30) park.stats.history.shift();
   park.stats.today = newLedger();
   if (park.cash < 0) park._events.push({ type: 'warn', text: 'Your park is in debt! Cut costs or raise prices.' });
+}
+
+// ---------------------------------------------------------------------------
+// Crime & security
+// ---------------------------------------------------------------------------
+
+const dist2 = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+
+/** How well a tile is covered by security. */
+function coverage(park, x, y) {
+  const here = { x: x + 0.5, y: y + 0.5 };
+  let guard = null, guardD = Infinity;
+  for (const s of park.staff) {
+    if (s.role !== 'guard') continue;
+    const d = dist2(actorPos(s), here);
+    if (d < guardD) { guardD = d; guard = s; }
+  }
+  let camera = false, lamp = false;
+  for (const o of park.objects) {
+    const def = SCENERY[o.kind];
+    if (!def || (!def.camera && !def.lamp)) continue;
+    const d = dist2({ x: o.x + 0.5, y: o.y + 0.5 }, here);
+    if (def.camera && d <= CRIME.cameraRadius ** 2) camera = true;
+    if (def.lamp && d <= CRIME.lampRadius ** 2) lamp = true;
+  }
+  return { guard, guardD: Math.sqrt(guardD), camera, lamp };
+}
+
+function logIncident(park, type, text) {
+  park.incidents.unshift({ type, text, day: day(park) });
+  if (park.incidents.length > 30) park.incidents.length = 30;
+  if (type !== 'arrest') {
+    park.stats.crimes++;
+    park.stats.today.crimeCount++;
+    park.safety = Math.max(0, park.safety - CRIME.safetyHit[type]);
+  }
+}
+
+function victimNear(park, g) {
+  const me = actorPos(g);
+  let best = null, bestD = 2.25;
+  for (const v of park.guests) {
+    if (v === g || v.crime || v.gone || (v.state !== 'walk' && v.state !== 'queue' && v.state !== 'sit')) continue;
+    const d = dist2(actorPos(v), me);
+    if (d < bestD) { bestD = d; best = v; }
+  }
+  return best;
+}
+
+/** Decides whether a criminal acts now, based on security nearby. */
+function planCrime(park, g) {
+  const cov = coverage(park, g.x, g.y);
+  let chance = 1;
+  if (cov.guard && cov.guardD <= CRIME.guardDeterRadius) chance *= CRIME.guardDeterFactor;
+  if (cov.camera) chance *= CRIME.cameraDeterFactor;
+  const dusk = dayProgress(park) > 0.75;
+  if (!dusk || cov.lamp) chance *= CRIME.daytimeFactor;
+  if (rand(park) > chance) {
+    g.crimeT = 5 + rand(park) * 8;
+    if (cov.guard && cov.guardD <= CRIME.guardDeterRadius) think(park, g, 'Too much security around here...');
+    return;
+  }
+
+  if (g.crime === 'robber') {
+    // Pick the busiest reachable till to hit.
+    const targets = park.objects.filter((o) => o.stats && o.open && o._access.length && o.stats.revenue > 0);
+    if (!targets.length) { g.crimeT = 20; return; }
+    targets.sort((a, b) => b.stats.revenue - a.stats.revenue);
+    const t = targets[Math.floor(rand(park) * Math.min(3, targets.length))];
+    g.heist = t.id;
+    g.target = t.id;
+    g.route = null;
+    g.crimeT = 9999; // acts on arrival
+    return;
+  }
+
+  const victim = victimNear(park, g);
+  if (!victim) { g.crimeT = 3 + rand(park) * 4; return; }
+  if (g.crime === 'pickpocket') commitTheft(park, g, victim, cov);
+  else commitAssault(park, g, victim, cov);
+}
+
+function commitTheft(park, g, v, cov) {
+  const amount = Math.min(v.cash, Math.round(5 + rand(park) * 30));
+  if (amount <= 0) { g.crimeT = 4; return; }
+  v.cash -= amount;
+  g.loot += amount;
+  v.happy = Math.max(0, v.happy - 20);
+  think(park, v, 'Someone stole my wallet!', true);
+  logIncident(park, 'theft', `${v.name} was pickpocketed ($${amount}).`);
+  afterCrime(park, g, cov, false);
+}
+
+function commitAssault(park, g, v, cov) {
+  const firstAid = park.objects.some((o) => o.kind === 'firstaid' && o.open);
+  const fatal = rand(park) < CRIME.homicideChance * (firstAid ? CRIME.firstAidHomicideFactor : 1);
+  if (fatal) {
+    v.gone = true;
+    spend(park, CRIME.homicideLegalCost, 'crime');
+    logIncident(park, 'homicide', `${v.name} was killed in an attack. Police are investigating.`);
+    park._events.push({ type: 'warn', text: `A guest was killed in an attack. Legal costs: $${CRIME.homicideLegalCost.toLocaleString()}.` });
+    const at = actorPos(v);
+    for (const w of park.guests) {
+      if (w !== g && !w.crime && dist2(actorPos(w), at) <= 25) startLeaving(park, w, "I'm getting out of here!");
+    }
+  } else {
+    v.injured = true;
+    v.happy = Math.max(0, v.happy - 40);
+    v.energy = Math.max(0, v.energy - 20);
+    think(park, v, 'I was attacked!', true);
+    logIncident(park, 'assault', `${v.name} was assaulted.`);
+    park._events.push({ type: 'warn', text: `A guest was assaulted! Consider hiring security.` });
+  }
+  afterCrime(park, g, cov, true);
+}
+
+function commitHeist(park, g, obj) {
+  g.heist = null;
+  const name = itemDef(obj.kind).name;
+  const amount = Math.round(clamp(park.stats.today.income * 0.35, 150, 3000));
+  const taken = Math.min(amount, Math.max(0, Math.round(park.cash)));
+  if (taken <= 0) { startLeaving(park, g); return; }
+  spend(park, taken, 'crime');
+  g.loot += taken;
+  g.heistLoot = true;
+  logIncident(park, 'heist', `Heist at ${name}: $${taken.toLocaleString()} stolen.`);
+  park._events.push({ type: 'warn', text: `Heist at ${name}! $${taken.toLocaleString()} stolen.` });
+  afterCrime(park, g, coverage(park, g.x, g.y), true);
+}
+
+/** Witnesses and cameras may identify the culprit; guards give chase. */
+function afterCrime(park, g, cov, flee) {
+  g.crimes++;
+  g.crimeT = 15 + rand(park) * 20;
+  const guardNear = cov.guard && cov.guardD <= CRIME.guardChaseRadius;
+  if (guardNear || (cov.camera && rand(park) < CRIME.cameraSpotChance)) g.spotted = true;
+  if (guardNear && !cov.guard.chase) {
+    cov.guard.chase = g.id;
+    cov.guard.route = null;
+  }
+  if (flee || g.crimes >= 3) startLeaving(park, g);
+}
+
+function arrest(park, g, by) {
+  for (const o of park.objects) {
+    if (o.queue?.includes(g.id)) o.queue.splice(o.queue.indexOf(g.id), 1);
+  }
+  g.gone = true;
+  g.arrested = true;
+  park.stats.arrests++;
+  park.safety = Math.min(100, park.safety + 2);
+  if (g.heistLoot && g.loot) earn(park, g.loot, 'crime');
+  const what = { pickpocket: 'pickpocket', brawler: 'violent offender', robber: 'robber' }[g.crime];
+  const recovered = g.heistLoot && g.loot ? ` $${Math.round(g.loot).toLocaleString()} recovered.` : '';
+  logIncident(park, 'arrest', `${g.name}, a ${what}, was arrested by ${by}.${recovered}`);
+  park._events.push({ type: 'goal', text: `${g.name} (${what}) arrested!${recovered}` });
+  for (const s of park.staff) if (s.chase === g.id) s.chase = null;
+}
+
+/** Guard behaviour on arriving at a tile. Returns true if it handled movement. */
+function guardStep(park, s, here) {
+  const pos = { x: s.x + 0.5, y: s.y + 0.5 };
+  // Arrest any identified criminal within reach.
+  for (const g of park.guests) {
+    if (!g.crime || !g.spotted || g.gone || g.state === 'ride') continue;
+    if (dist2(actorPos(g), pos) <= 1.6) { arrest(park, g, s.name); return false; }
+  }
+  if (!s.chase) return false;
+  const g = park._guestById.get(s.chase);
+  if (!g || g.gone) { s.chase = null; return false; }
+  const goal = g.state === 'queue' && g.queueAt >= 0 ? g.queueAt : idx(g.nx, g.ny);
+  const { prev } = bfs(park, here, true);
+  s.route = traceRoute(prev, here, goal);
+  if (!s.route) { s.chase = null; return false; }
+  advance(park, s, true);
+  return true;
 }
 
 /** Removes and returns pending UI notifications produced by the sim. */

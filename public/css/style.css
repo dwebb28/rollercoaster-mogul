@@ -131,6 +131,7 @@ body.game { overflow: hidden; user-select: none; -webkit-user-select: none; }
 .list { list-style: none; padding: 0; margin: 0; }
 .list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
 .goals li.done { color: var(--good); }
+.incidents li { align-items: flex-start; font-size: 0.82rem; }
 .goals li.done::before { content: "✔ "; }
 .goals li:not(.done)::before { content: "○ "; color: var(--muted); }
 .chart { display: flex; align-items: flex-end; gap: 3px; height: 70px; padding: 4px 0; border-bottom: 1px solid var(--border); }

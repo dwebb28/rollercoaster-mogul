@@ -125,6 +125,9 @@ function updateHud() {
   $('s-guests').textContent = s.guests;
   $('s-rating').textContent = s.rating;
   $('s-rating-bar').style.width = `${(s.rating / 999) * 100}%`;
+  $('s-safety').textContent = s.safety;
+  $('s-safety-bar').style.width = `${s.safety}%`;
+  $('s-safety-bar').style.background = s.safety > 70 ? '#51cf66' : s.safety > 40 ? '#ffd23f' : '#ff6b6b';
   $('s-day').textContent = Sim.day(park);
   $('s-day-bar').style.width = `${Sim.dayProgress(park) * 100}%`;
 
@@ -185,8 +188,8 @@ function renderPalette() {
   box.replaceChildren(...Object.entries(items).map(([kind, def]) => {
     let meta;
     if (state.palette === 'ride') meta = `${money(def.cost)} · ${def.w}×${def.h} · Thrill ${def.excitement}/10 · Intensity ${def.intensity}/10`;
-    else if (state.palette === 'stall') meta = `${money(def.cost)} · ${def.sells === 'restroom' ? 'free for guests' : `sells ${def.sells}`}`;
-    else meta = `${money(def.cost)}${def.beauty ? ` · beauty +${def.beauty}` : def.seat ? ' · guests rest here' : def.bin ? ' · stops litter' : ''}`;
+    else if (state.palette === 'stall') meta = `${money(def.cost)} · ${def.sells === 'restroom' ? 'free for guests' : def.sells === 'firstaid' ? 'treats injured guests' : `sells ${def.sells}`}`;
+    else meta = `${money(def.cost)}${def.camera ? ' · deters & identifies criminals' : def.lamp ? ' · lights paths at dusk' : def.beauty ? ` · beauty +${def.beauty}` : def.seat ? ' · guests rest here' : def.bin ? ' · stops litter' : ''}`;
     return el('button', {
       class: `item${state.buildKind === kind ? ' active' : ''}${state.park.cash < def.cost ? ' unaffordable' : ''}`,
       onclick: () => setTool('build', kind),
@@ -283,6 +286,9 @@ const stepper = (value, onDown, onUp) => el('div', { class: 'stepper' },
   el('span', { class: 'value' }, value),
   el('button', { class: 'btn btn-small', onclick: onUp, 'aria-label': 'Increase' }, '+'));
 
+const FREE = new Set(['restroom', 'firstaid']);
+const CRIME_ICON = { theft: '👛', assault: '🤕', heist: '💰', homicide: '🚨', arrest: '🚓' };
+
 const PANELS = {
   welcome: () => el('div', {},
     el('h2', {}, 'Welcome, Mogul!'),
@@ -291,7 +297,8 @@ const PANELS = {
       el('li', {}, 'Use 🟫 Path to extend the walkway from the entrance (click and drag).'),
       el('li', {}, 'Open 🎢 Rides and place a ride next to the path.'),
       el('li', {}, 'Add 🍔 Shops and restrooms so guests stay fed and comfortable.'),
-      el('li', {}, 'Hire janitors and mechanics from 🧹 Staff.'),
+      el('li', {}, 'Hire janitors, mechanics and security guards from 🧹 Staff.'),
+      el('li', {}, 'Watch your Safety score: some visitors are thieves, brawlers or robbers.'),
       el('li', {}, 'Bulldoze trees to make room — and plant scenery to make guests happy.')),
     el('p', { class: 'small muted' }, 'Your park saves automatically to your account.'),
     el('div', { class: 'actions' }, el('button', { class: 'btn btn-primary', onclick: closePanel }, "Let's build!"))),
@@ -316,11 +323,11 @@ const PANELS = {
         ['Upkeep', `${money(def.upkeep)}/day`],
         o._access.length === 0 && ['Access', '⚠ Not connected to a path'],
       ]),
-      def.sells !== 'restroom' && el('h3', {}, 'Price'),
-      def.sells !== 'restroom' && stepper(`$${o.price.toFixed(o.price % 1 ? 2 : 0)}`,
+      !FREE.has(def.sells) && el('h3', {}, 'Price'),
+      !FREE.has(def.sells) && stepper(`$${o.price.toFixed(o.price % 1 ? 2 : 0)}`,
         () => { Sim.setPrice(park, id, o.price - 0.5); state.dirty = true; refreshPanel(true); },
         () => { Sim.setPrice(park, id, o.price + 0.5); state.dirty = true; refreshPanel(true); }),
-      def.sells !== 'restroom' && el('p', { class: 'small muted' }, ride
+      !FREE.has(def.sells) && el('p', { class: 'small muted' }, ride
         ? `Guests will typically pay up to about ${money(1.5 + ride.excitement * 1.05)}.`
         : 'Guests balk at overpriced food and drinks.'),
       el('div', { class: 'actions' },
@@ -334,7 +341,9 @@ const PANELS = {
     const def = SCENERY[o.kind];
     return el('div', {},
       el('h2', {}, def.name),
-      el('p', { class: 'muted small' }, def.seat ? 'Tired guests sit here to rest.' : def.bin ? 'Guests nearby throw their litter away here.' : 'Pretty scenery makes nearby guests happier.'),
+      el('p', { class: 'muted small' }, def.camera ? 'Discourages crime nearby and helps identify culprits, who may be stopped at the gate.'
+        : def.lamp ? 'Lights the area at dusk, when crime is otherwise more likely.'
+        : def.seat ? 'Tired guests sit here to rest.' : def.bin ? 'Guests nearby throw their litter away here.' : 'Pretty scenery makes nearby guests happier.'),
       el('div', { class: 'actions' }, el('button', { class: 'btn btn-danger', onclick: () => demolish(o) }, o.paid ? `Remove (+${money(o.paid * 0.5)})` : 'Remove')));
   },
 
@@ -346,6 +355,8 @@ const PANELS = {
     return el('div', {},
       el('h2', {}, `${mood} ${g.name}`),
       el('p', { class: 'muted small' }, doing),
+      g.crime && g.spotted && el('p', { class: 'error small' }, `⚠ Wanted: ${{ pickpocket: 'pickpocketing', brawler: 'assault', robber: 'robbery' }[g.crime]}`),
+      g.injured && el('p', { class: 'small' }, '🩹 Injured: looking for first aid'),
       g.thought && el('div', { class: 'thought-bubble' }, `“${g.thought}”`),
       el('div', { class: 'need' }, 'Happiness', bar(g.happy, '#2f9e44')),
       el('div', { class: 'need' }, 'Energy', bar(g.energy, '#3e8ed0')),
@@ -364,7 +375,7 @@ const PANELS = {
   staff: ({ id }) => {
     const s = state.park.staff.find((m) => m.id === id);
     if (!s) return null;
-    const job = s.busy > 0 ? (s.role === 'janitor' ? 'Sweeping' : 'Fixing a ride') : s.task ? 'Heading to a broken ride' : 'Patrolling';
+    const job = s.chase ? 'Chasing a suspect' : s.busy > 0 ? (s.role === 'janitor' ? 'Sweeping' : 'Fixing a ride') : s.task ? 'Heading to a broken ride' : 'Patrolling';
     return el('div', {},
       el('h2', {}, s.name),
       el('p', { class: 'muted small' }, `${STAFF[s.role].name} · ${job}`),
@@ -376,7 +387,7 @@ const PANELS = {
     const { park } = state;
     return el('div', {},
       el('h2', {}, 'Staff'),
-      el('p', { class: 'small muted' }, 'Janitors sweep up litter. Mechanics repair broken rides. Wages are paid daily.'),
+      el('p', { class: 'small muted' }, 'Janitors sweep up litter. Mechanics repair broken rides. Security guards deter crime and arrest suspects. Wages are paid daily.'),
       el('div', { class: 'actions' }, Object.entries(STAFF).map(([role, def]) =>
         el('button', { class: 'btn', onclick: () => { Sim.hire(park, role); state.dirty = true; toast(`Hired a ${def.name.toLowerCase()}.`); refreshPanel(true); } },
           `Hire ${def.name} (${money(def.wage)}/day)`))),
@@ -417,6 +428,20 @@ const PANELS = {
         ['Litter on paths', s.litter],
         ['Guests all-time', park.stats.totalGuests.toLocaleString()],
       ]),
+      el('h3', {}, 'Safety & security'),
+      el('div', { class: 'need' }, 'Safety', bar(s.safety, s.safety > 70 ? '#2f9e44' : s.safety > 40 ? '#e8a33a' : '#e5484d')),
+      kv([
+        ['Security guards', s.guards],
+        ['Crimes today', t.crimeCount],
+        ['Crimes all-time', park.stats.crimes],
+        ['Arrests', park.stats.arrests],
+        t.crime && ['Crime losses today (net)', money(t.crime)],
+      ]),
+      park.incidents.length > 0
+        ? el('ul', { class: 'list incidents' }, park.incidents.slice(0, 6).map((i) =>
+          el('li', {}, el('span', {}, `${CRIME_ICON[i.type]} ${i.text}`), el('span', { class: 'muted small' }, `D${i.day}`))))
+        : el('p', { class: 'small muted' }, 'No incidents reported.'),
+      s.safety < 60 && el('p', { class: 'small' }, 'Tip: guards, cameras, lamp posts and a first aid post make the park safer.'),
       el('h3', {}, `Today (day ${Sim.day(park)})`),
       kv([
         ['Admissions', money(t.admissions)],
