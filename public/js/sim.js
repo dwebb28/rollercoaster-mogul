@@ -4,7 +4,9 @@
 import {
   GRID, DAY_SECONDS, START_CASH, PATH_COST, REFUND_RATE,
   RIDES, STALLS, SCENERY, STAFF, SPECIAL, OBJECTIVES, CRIME, PANDEMONIUM, itemDef, itemCategory,
+  CUSTOM_COASTER,
 } from './catalog.js';
+import * as Coaster from './coaster.js';
 
 export const TILE = { GRASS: 0, PATH: 1, ENTRANCE: 2 };
 export const ENTRANCE = { x: GRID / 2, y: GRID - 1 };
@@ -99,18 +101,30 @@ function newLedger() {
   return { income: 0, expenses: 0, admissions: 0, rides: 0, shops: 0, wages: 0, upkeep: 0, construction: 0, crime: 0, shows: 0, fines: 0, crimeCount: 0 };
 }
 
+/** Ground tiles an object stands on (custom coasters follow their track). */
+export function cellsOf(obj) {
+  if (obj.kind === 'custom') return obj._cells || [];
+  const out = [];
+  for (let y = obj.y; y < obj.y + obj.h; y++) for (let x = obj.x; x < obj.x + obj.w; x++) out.push([x, y]);
+  return out;
+}
+
+/** Ride definition for an object, including physics-derived custom coasters. */
+export function rideDef(obj) {
+  return RIDES[obj.kind] || (obj.kind === 'custom' ? obj._def || CUSTOM_COASTER : null);
+}
+
 /** Rebuilds transient lookup tables (anything prefixed with `_`). */
 function rebuildIndex(park) {
   park._objAt = new Int32Array(GRID * GRID);
   park._byId = new Map();
   for (const obj of park.objects) {
-    for (let y = obj.y; y < obj.y + obj.h; y++) {
-      for (let x = obj.x; x < obj.x + obj.w; x++) {
-        if (!inBounds(x, y)) throw new Error('object out of bounds');
-        const i = idx(x, y);
-        if (park._objAt[i] || park.tiles[i] !== TILE.GRASS) throw new Error('overlapping objects');
-        park._objAt[i] = obj.id;
-      }
+    if (obj.kind === 'custom') refreshCoaster(obj);
+    for (const [x, y] of cellsOf(obj)) {
+      if (!inBounds(x, y)) throw new Error('object out of bounds');
+      const i = idx(x, y);
+      if (park._objAt[i] || park.tiles[i] !== TILE.GRASS) throw new Error('overlapping objects');
+      park._objAt[i] = obj.id;
     }
     park._byId.set(obj.id, obj);
   }
@@ -122,6 +136,18 @@ function rebuildIndex(park) {
 /** Recomputes which path tiles touch each object. */
 function refreshAccess(park) {
   for (const obj of park.objects) {
+    if (obj.kind === 'custom') {
+      // Guests board at the station only.
+      const access = new Set();
+      for (const [x, y] of obj._stationCells || []) {
+        for (const [dx, dy] of DIRS) {
+          const nx = x + dx, ny = y + dy;
+          if (inBounds(nx, ny) && park.tiles[idx(nx, ny)] === TILE.PATH) access.add(idx(nx, ny));
+        }
+      }
+      obj._access = [...access];
+      continue;
+    }
     const access = [];
     for (let y = obj.y - 1; y <= obj.y + obj.h; y++) {
       for (let x = obj.x - 1; x <= obj.x + obj.w; x++) {
@@ -189,6 +215,19 @@ export function deserialize(data) {
     if (!def) throw new Error('unknown object kind');
     ensureId(o.id);
     if (!Number.isInteger(o.x) || !Number.isInteger(o.y)) throw new Error('bad object position');
+    if (o.kind === 'custom') {
+      const t = o.track;
+      if (!t || !Number.isInteger(t.dir) || t.dir < 0 || t.dir > 3 || !Array.isArray(t.pieces)) throw new Error('bad coaster track');
+      const pieces = t.pieces.slice(0, 400);
+      if (pieces[0] !== 'station' || pieces.some((p) => !Coaster.PIECES[p])) throw new Error('bad coaster track');
+      park.objects.push(makeObject('custom', o.id, o.x, o.y, num(o.paid, 0, 1e7, 0), {
+        price: num(o.price, 0, 50, 0), open: o.open === true && o.building !== true, broken: o.broken === true,
+        stats: { riders: num(o.stats?.riders, 0, 1e9), revenue: num(o.stats?.revenue, 0, 1e10) },
+        track: { dir: t.dir, pieces }, building: o.building === true,
+        name: String(o.name ?? 'Custom Coaster').slice(0, 40) || 'Custom Coaster',
+      }));
+      continue;
+    }
     if (o.kind === 'retribution') {
       // An interrupted show returns its prisoners to custody.
       for (const v of Array.isArray(o.show?.victims) ? o.show.victims.slice(0, 50) : []) pendingCaptives.push(String(v).slice(0, 30));
@@ -341,14 +380,17 @@ export function actorPos(a) {
 }
 
 export function parkStats(park) {
+  let customCoasters = 0;
   let rides = 0, coasters = 0, stalls = 0, assets = 0, excitement = 0, broken = 0, beauty = 0;
   for (const o of park.objects) {
     assets += o.paid;
     const cat = itemCategory(o.kind);
     if (cat === 'ride') {
       rides++;
-      if (RIDES[o.kind].coaster) coasters++;
-      if (o.open) excitement += RIDES[o.kind].excitement;
+      const rd = rideDef(o);
+      if (rd.coaster) coasters++;
+      if (o.kind === 'custom' && !o.building) customCoasters++;
+      if (o.open) excitement += rd.excitement;
       if (o.broken) broken++;
     } else if (cat === 'stall') stalls++;
     else if (cat === 'scenery') beauty += SCENERY[o.kind].beauty;
@@ -359,7 +401,7 @@ export function parkStats(park) {
   let happy = 0;
   for (const g of park.guests) happy += g.happy;
   return {
-    rides, coasters, stalls, broken, excitement, beauty, litter,
+    rides, coasters, customCoasters, stalls, broken, excitement, beauty, litter,
     guards: park.staff.filter((s) => s.role === 'guard').length,
     arrests: park.stats.arrests,
     safety: Math.round(park.safety),
@@ -465,7 +507,7 @@ export function bulldoze(park, x, y) {
 function removeObject(park, obj) {
   if (obj.queue) for (const gid of [...obj.queue, ...obj.riders]) releaseGuest(park, park._guestById.get(gid));
   for (const s of park.staff) if (s.task === obj.id) s.task = null;
-  for (let yy = obj.y; yy < obj.y + obj.h; yy++) for (let xx = obj.x; xx < obj.x + obj.w; xx++) park._objAt[idx(xx, yy)] = 0;
+  for (const [xx, yy] of cellsOf(obj)) park._objAt[idx(xx, yy)] = 0;
   park.objects.splice(park.objects.indexOf(obj), 1);
   park._byId.delete(obj.id);
   const refund = Math.round(obj.paid * REFUND_RATE);
@@ -481,6 +523,7 @@ export function setPrice(park, id, price) {
 export function setOpen(park, id, open) {
   const obj = getObject(park, id);
   if (!obj || !('open' in obj)) return;
+  if (open && obj.building) return; // custom coasters open via openCoaster()
   obj.open = open;
   if (!open && obj.queue) for (const gid of obj.queue.splice(0)) releaseGuest(park, park._guestById.get(gid));
 }
@@ -761,7 +804,7 @@ function updateGuest(park, g, dt) {
       if (ride) ride.queue.splice(ride.queue.indexOf(g.id), 1);
       releaseGuest(park, g);
       g.happy -= 8;
-      think(park, g, `I've waited too long for ${ride ? RIDES[ride.kind].name : 'this ride'}.`);
+      think(park, g, `I've waited too long for ${ride ? rideDef(ride).name : 'this ride'}.`);
     }
   } else if (g.state === 'busy' || g.state === 'sit') {
     g.busy -= dt;
@@ -935,7 +978,7 @@ function pickGoal(park, g, here) {
       if (need === 'seat' ? !SCENERY[obj.kind]?.seat : STALLS[obj.kind]?.sells !== need || !obj.open) continue;
       score = 0;
     } else {
-      const def = RIDES[obj.kind];
+      const def = rideDef(obj);
       if (!def || !obj.open || obj.broken || def.intensity > g.pref + 2 || obj.price > g.cash) continue;
       score = def.excitement * 10 - (g.ridden[obj.id] || 0) * 18 - obj.queue.length * 1.5 + rand(park) * 12;
     }
@@ -965,7 +1008,7 @@ function interact(park, g, obj, here) {
   g.route = null;
   if (g.heist === obj.id) return commitHeist(park, g, obj);
   if (obj.kind === 'retribution') return watchShow(park, g, obj);
-  const ride = RIDES[obj.kind];
+  const ride = rideDef(obj);
   const stall = STALLS[obj.kind];
   if (ride) {
     if (!obj.open || obj.broken) return think(park, g, `${ride.name} isn't running.`);
@@ -1013,7 +1056,7 @@ function interact(park, g, obj, here) {
 }
 
 function updateRide(park, obj, dt) {
-  const def = RIDES[obj.kind];
+  const def = rideDef(obj);
   if (obj.broken || !obj.open) {
     if (obj.queue.length) {
       for (const gid of obj.queue.splice(0)) {
@@ -1162,7 +1205,7 @@ function endDay(park, finishedDay) {
   maybeStartRaid(park, finishedDay + 1);
   for (const s of park.staff) spend(park, STAFF[s.role].wage, 'wages');
   for (const o of park.objects) {
-    const def = RIDES[o.kind] || STALLS[o.kind] || SPECIAL[o.kind];
+    const def = rideDef(o) || STALLS[o.kind] || SPECIAL[o.kind];
     if (def && o.open !== false) spend(park, def.upkeep, 'upkeep');
   }
   if (park.fence) spend(park, CRIME.fenceUpkeep, 'upkeep');
@@ -1824,6 +1867,193 @@ export function setLocked(park, locked) {
     ? { type: 'raid', text: '🔒 LOCKDOWN: the exits are sealed. Nobody gets in or out.' }
     : { type: 'info', text: '🔓 Lockdown lifted. The gates are open.' });
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Custom coasters
+// ---------------------------------------------------------------------------
+
+/** Recomputes a custom coaster's layout, footprint, and (if open) physics. */
+function refreshCoaster(obj) {
+  const start = { x: obj.x, y: obj.y, dir: obj.track.dir };
+  const lay = Coaster.layout(start, obj.track.pieces);
+  const seen = new Set();
+  obj._cells = [];
+  obj._stationCells = [];
+  for (const seg of lay.segs) {
+    for (const c of seg.cells) {
+      if (seg.type === 'station') obj._stationCells.push([c.x, c.y]);
+      const k = c.y * GRID + c.x;
+      if (!seen.has(k)) { seen.add(k); obj._cells.push([c.x, c.y]); }
+    }
+  }
+  obj._layout = lay;
+  obj._version = (obj._version || 0) + 1;
+  obj._design = Coaster.isComplete(start, obj.track.pieces) ? Coaster.simulate(start, obj.track.pieces) : null;
+  obj._def = defFromDesign(obj);
+  if (obj._design && !obj._design.ok && !obj.building) { obj.building = true; obj.open = false; }
+}
+
+function defFromDesign(obj) {
+  const d = obj._design?.ok ? obj._design : null;
+  const n = obj.track.pieces.length;
+  return {
+    ...CUSTOM_COASTER,
+    name: obj.name,
+    duration: d ? d.duration + 2 : CUSTOM_COASTER.duration,
+    excitement: d ? d.excitement : 0,
+    intensity: d ? d.intensity : 0,
+    nausea: d ? d.nausea : 0,
+    upkeep: Math.round(30 + n * 1.2),
+    reliability: Math.max(0.9, 0.985 - n * 0.0002),
+  };
+}
+
+export const coasterStart = (obj) => ({ x: obj.x, y: obj.y, dir: obj.track.dir });
+export const coasterComplete = (obj) => Coaster.isComplete(coasterStart(obj), obj.track.pieces);
+
+/** Places a new coaster's station and opens it for building. */
+export function startCoaster(park, x, y, dir) {
+  if (!inBounds(x, y)) return { ok: false, reason: 'Out of bounds' };
+  const i = idx(x, y);
+  if (park.tiles[i] !== TILE.GRASS || park._objAt[i]) return { ok: false, reason: 'Something is in the way' };
+  const cost = Coaster.PIECES.station.cost;
+  if (park.cash < cost) return { ok: false, reason: 'Not enough cash', cash: true };
+  spend(park, cost, 'construction');
+  const n = park.objects.filter((o) => o.kind === 'custom').length + 1;
+  const obj = makeObject('custom', park.nextId++, x, y, cost, {
+    track: { dir: ((dir % 4) + 4) % 4, pieces: ['station'] }, building: true, open: false, name: `Coaster ${n}`, price: 0,
+  });
+  park.objects.push(obj);
+  park._byId.set(obj.id, obj);
+  refreshCoaster(obj);
+  park._objAt[i] = obj.id;
+  refreshAccess(park);
+  return { ok: true, obj };
+}
+
+/** Checks whether a piece can be added to the end of a coaster under construction. */
+export function canAddPiece(park, obj, type) {
+  const def = Coaster.PIECES[type];
+  if (!def) return { ok: false, reason: 'Unknown piece' };
+  if (!obj?.building) return { ok: false, reason: 'Close the coaster and choose Edit to change it.' };
+  if (coasterComplete(obj)) return { ok: false, reason: 'The circuit is complete.' };
+  if (obj.track.pieces.length >= 400) return { ok: false, reason: 'Track is too long.' };
+  const start = coasterStart(obj);
+  const lay = Coaster.layout(start, [...obj.track.pieces, type]);
+  const seg = lay.segs[lay.segs.length - 1];
+  if (seg.h1 < 0) return { ok: false, reason: "Track can't go underground." };
+  const top = Math.max(seg.h0, seg.h1) + (def.loop ? (Coaster.PHYSICS.loopRadius * 2) / Coaster.STEP : 0);
+  if (top > Coaster.MAX_STEPS) return { ok: false, reason: 'Too high.' };
+  const lo = Math.min(seg.h0, seg.h1);
+  for (const c of seg.cells) {
+    if (!inBounds(c.x, c.y)) return { ok: false, reason: 'Out of bounds' };
+    const i = idx(c.x, c.y);
+    if (park.tiles[i] !== TILE.GRASS) return { ok: false, reason: 'Blocked by a path' };
+    const owner = park._objAt[i];
+    if (owner && owner !== obj.id) return { ok: false, reason: 'Something is in the way' };
+    if (owner === obj.id) {
+      // Crossing our own track needs vertical clearance.
+      for (const other of lay.segs.slice(0, -1)) {
+        if (!other.cells.some((oc) => oc.x === c.x && oc.y === c.y)) continue;
+        const oLo = Math.min(other.h0, other.h1);
+        const oHi = Math.max(other.h0, other.h1) + (Coaster.PIECES[other.type].loop ? (Coaster.PHYSICS.loopRadius * 2) / Coaster.STEP : 0);
+        if (!(lo >= oHi + Coaster.CROSS_CLEARANCE || top + Coaster.CROSS_CLEARANCE <= oLo)) {
+          return { ok: false, reason: 'Track would collide with itself' };
+        }
+      }
+    }
+  }
+  if (park.cash < def.cost) return { ok: false, reason: 'Not enough cash', cash: true };
+  return { ok: true };
+}
+
+function reindexCoaster(park, obj) {
+  for (const [x, y] of obj._cells || []) if (park._objAt[idx(x, y)] === obj.id) park._objAt[idx(x, y)] = 0;
+  refreshCoaster(obj);
+  for (const [x, y] of obj._cells) park._objAt[idx(x, y)] = obj.id;
+  refreshAccess(park);
+}
+
+export function addPiece(park, id, type) {
+  const obj = getObject(park, id);
+  const check = canAddPiece(park, obj, type);
+  if (!check.ok) return check;
+  const cost = Coaster.PIECES[type].cost;
+  spend(park, cost, 'construction');
+  obj.paid += cost;
+  obj.track.pieces.push(type);
+  reindexCoaster(park, obj);
+  return { ok: true, complete: coasterComplete(obj) };
+}
+
+/** Removes the last piece (full refund while building). Removing the station demolishes the coaster. */
+export function removePiece(park, id) {
+  const obj = getObject(park, id);
+  if (!obj?.building) return { ok: false, reason: 'Close the coaster and choose Edit first.' };
+  if (obj.track.pieces.length <= 1) {
+    const paid = obj.paid;
+    obj.paid = 0;
+    removeObject(park, obj);
+    earn(park, paid, 'construction');
+    return { ok: true, removed: true };
+  }
+  const type = obj.track.pieces.pop();
+  const cost = Coaster.PIECES[type].cost;
+  obj.paid -= cost;
+  earn(park, cost, 'construction');
+  reindexCoaster(park, obj);
+  return { ok: true };
+}
+
+/** Runs the physics test. Returns the stats or the reason it failed. */
+export function testCoaster(park, id) {
+  const obj = getObject(park, id);
+  if (!obj || obj.kind !== 'custom') return { ok: false, reason: 'Not a custom coaster.' };
+  if (!coasterComplete(obj)) {
+    const c = obj._layout.cursor;
+    return { ok: false, reason: `The track must return to the station. It ends ${describeGap(obj, c)}.` };
+  }
+  refreshCoaster(obj);
+  return obj._design;
+}
+
+function describeGap(obj, c) {
+  const parts = [];
+  const dx = obj.x - c.x, dy = obj.y - c.y;
+  if (dx) parts.push(`${Math.abs(dx)} tile${Math.abs(dx) > 1 ? 's' : ''} ${dx > 0 ? 'west' : 'east'}`);
+  if (dy) parts.push(`${Math.abs(dy)} tile${Math.abs(dy) > 1 ? 's' : ''} ${dy > 0 ? 'north' : 'south'}`);
+  if (c.h) parts.push(`${c.h} m up`);
+  if (c.dir !== obj.track.dir) parts.push('facing the wrong way');
+  return parts.length ? parts.join(', ') + ' of the station' : 'at the station';
+}
+
+export function openCoaster(park, id) {
+  const obj = getObject(park, id);
+  const res = testCoaster(park, id);
+  if (!res.ok) return res;
+  obj.building = false;
+  obj.open = true;
+  obj._def = defFromDesign(obj);
+  if (!obj.price) obj.price = Math.max(1, Math.round(1 + res.excitement * 0.9));
+  park._events.push({ type: 'goal', text: `${obj.name} is open! Top speed ${res.maxSpeed} km/h.` });
+  return res;
+}
+
+export function editCoaster(park, id) {
+  const obj = getObject(park, id);
+  if (!obj || obj.kind !== 'custom') return { ok: false, reason: 'Not a custom coaster.' };
+  if (obj.phase === 'running') return { ok: false, reason: 'Wait for the train to return to the station.' };
+  setOpen(park, id, false);
+  obj.building = true;
+  return { ok: true };
+}
+
+export function renameRide(park, id, name) {
+  const obj = getObject(park, id);
+  if (!obj || obj.kind !== 'custom') return;
+  obj.name = String(name).trim().slice(0, 40) || obj.name;
+  obj._def = defFromDesign(obj);
 }
 
 /** Removes and returns pending UI notifications produced by the sim. */

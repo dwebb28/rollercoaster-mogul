@@ -44,6 +44,13 @@ export const RIDES = {
   },
 };
 
+/** Base definition for player-designed coasters; stats come from physics. */
+export const CUSTOM_COASTER = {
+  name: 'Custom Coaster', w: 1, h: 1, cost: 0, capacity: 16, duration: 30,
+  excitement: 0, intensity: 0, nausea: 0, price: 0, upkeep: 30, reliability: 0.975,
+  color: '#3a86ff', coaster: true, custom: true,
+};
+
 export const STALLS = {
   burger: { name: 'Burger Shack', w: 1, h: 1, cost: 400, sells: 'food', price: 4, unitCost: 1.5, upkeep: 10, icon: '🍔', color: '#e8833a' },
   pizza: { name: 'Pizza Slice', w: 1, h: 1, cost: 500, sells: 'food', price: 5, unitCost: 1.8, upkeep: 12, icon: '🍕', color: '#d9534f' },
@@ -155,11 +162,11 @@ export const CRIME = {
 };
 
 export function itemDef(kind) {
-  return RIDES[kind] || STALLS[kind] || SCENERY[kind] || SPECIAL[kind] || null;
+  return RIDES[kind] || STALLS[kind] || SCENERY[kind] || SPECIAL[kind] || (kind === 'custom' ? CUSTOM_COASTER : null);
 }
 
 export function itemCategory(kind) {
-  if (RIDES[kind]) return 'ride';
+  if (RIDES[kind] || kind === 'custom') return 'ride';
   if (STALLS[kind]) return 'stall';
   if (SCENERY[kind]) return 'scenery';
   if (SPECIAL[kind]) return 'special';
@@ -170,6 +177,7 @@ export const OBJECTIVES = [
   { id: 'first-ride', text: 'Build your first ride', test: (s) => s.rides >= 1 },
   { id: 'guests-25', text: 'Have 25 guests in the park', test: (s) => s.guests >= 25 },
   { id: 'coaster', text: 'Build a roller coaster', test: (s) => s.coasters >= 1 },
+  { id: 'designer', text: 'Open a coaster of your own design', test: (s) => s.customCoasters >= 1 },
   { id: 'rating-600', text: 'Reach a park rating of 600', test: (s) => s.rating >= 600 },
   { id: 'rides-6', text: 'Operate 6 rides', test: (s) => s.rides >= 6 },
   { id: 'guests-100', text: 'Have 100 guests in the park', test: (s) => s.guests >= 100 },
