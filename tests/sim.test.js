@@ -170,6 +170,7 @@ test('pickpockets steal from nearby guests and lower safety', () => {
 test('guards deter crime and arrest identified criminals', () => {
   const quiet = (guards, seed) => {
     const p = samplePark(seed);
+    p.pandemonium.nextRaidDay = Infinity; // isolate ordinary crime from Pandemonium raids
     for (let i = 0; i < guards; i++) Sim.hire(p, 'guard');
     run(p, 600);
     return p;
@@ -229,4 +230,92 @@ test('crime state survives save/load', () => {
   const data = Sim.serialize(p);
   data.guests[0].crime = 'arson';
   assert.equal(Sim.deserialize(data).guests[0].crime, null);
+});
+
+// ---------------------------------------------------------------------------
+// Pandemonium
+// ---------------------------------------------------------------------------
+
+function securePark(seed, officers) {
+  const p = samplePark(seed);
+  p.cash = 100000;
+  assert.ok(Sim.build(p, 'securityhq', 21, 27).ok);
+  assert.ok(Sim.build(p, 'retribution', 21, 30).ok);
+  for (let i = 0; i < officers; i++) assert.ok(Sim.hire(p, 'squad').ok);
+  run(p, 60);
+  return p;
+}
+
+const runRaid = (p) => { for (let i = 0; i < 2000 && p.raid; i++) Sim.step(p, 0.1); };
+
+test('the Hot Dog Squad requires a Security HQ', () => {
+  const p = samplePark(70);
+  const res = Sim.hire(p, 'squad');
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /Security HQ/);
+});
+
+test('an undefended park loses money to Pandemonium and they escape', () => {
+  const p = securePark(71, 0);
+  const cash = p.cash;
+  assert.ok(Sim.startRaid(p));
+  assert.ok(Sim.activePandas(p).length >= 4);
+  runRaid(p);
+  assert.equal(p.raid, null);
+  assert.ok(p.pandemonium.escaped > 0);
+  assert.equal(p.pandemonium.defeated, 0);
+  assert.ok(p.cash < cash);
+  assert.equal(p.captives.length, 0);
+});
+
+test('the squad shoots down the crew, recovers loot and takes prisoners', () => {
+  const p = securePark(72, 4);
+  Sim.startRaid(p);
+  const size = Sim.activePandas(p).length;
+  runRaid(p);
+  assert.equal(p.pandemonium.defeated, 1);
+  assert.equal(p.pandemonium.escaped, 0);
+  assert.equal(p.captives.length, size);
+  assert.ok(p.objectives.includes('pandemonium'));
+});
+
+test('public execution consumes prisoners, entertains guests and restores safety', () => {
+  const p = securePark(73, 4);
+  Sim.startRaid(p);
+  runRaid(p);
+  const rig = p.objects.find((o) => o.kind === 'retribution');
+  const prisoners = p.captives.length;
+  p.safety = 40;
+  assert.equal(Sim.execute(p, rig.id, 'water').ok, true);
+  assert.equal(rig.pit, 'water');
+  assert.equal(p.captives.length, 0);
+  assert.equal(Sim.execute(p, rig.id, 'fire').ok, false, 'one show at a time');
+  run(p, prisoners * 4 + 5);
+  assert.equal(rig.show, null);
+  assert.equal(p.pandemonium.executions, prisoners);
+  assert.equal(p.safety, 100);
+  assert.ok(p.objectives.includes('justice'));
+  assert.equal(p.incidents.find((i) => i.type === 'execution').type, 'execution');
+});
+
+test('blood stains upset guests and janitors scrub them', () => {
+  const p = samplePark(74);
+  const i = Sim.idx(20, 29);
+  p.stains[i] = 3;
+  run(p, 60);
+  assert.equal(p.stains[i], 0);
+});
+
+test('raids, prisoners and stains survive save/load', () => {
+  const p = securePark(75, 0);
+  Sim.startRaid(p);
+  run(p, 5);
+  p.captives.push({ name: 'Mochi' });
+  p.stains[Sim.idx(20, 30)] = 2;
+  const q = Sim.deserialize(JSON.parse(JSON.stringify(Sim.serialize(p))));
+  assert.ok(q.raid);
+  assert.equal(Sim.activePandas(q).length, Sim.activePandas(p).length);
+  assert.equal(q.captives[0].name, 'Mochi');
+  assert.equal(q.stains[Sim.idx(20, 30)], 2);
+  assert.equal(q.pandemonium.raids, 1);
 });

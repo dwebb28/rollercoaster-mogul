@@ -68,6 +68,42 @@ export const STAFF = {
   janitor: { name: 'Janitor', wage: 30, color: '#3fa34d' },
   mechanic: { name: 'Mechanic', wage: 45, color: '#e07b24' },
   guard: { name: 'Security Guard', wage: 55, color: '#2b4c7e' },
+  squad: { name: 'Hot Dog Squad Officer', wage: 90, color: '#d63c2f', requires: 'securityhq' },
+};
+
+/** Special structures for dealing with the Pandemonium heist crew. */
+export const SPECIAL = {
+  securityhq: { name: 'Security HQ', w: 2, h: 2, cost: 5000, upkeep: 60, color: '#2b4c7e' },
+  retribution: { name: 'Retribution Rig', w: 4, h: 3, cost: 12000, upkeep: 40, color: '#5a1a1a' },
+};
+
+/** Pandemonium: a raiding heist crew in panda costumes. */
+export const PANDEMONIUM = {
+  firstRaidDay: 4,
+  raidChance: 0.45, // chance per day once the cooldown has passed
+  cooldownDays: 2,
+  minGuests: 15,
+  crewBase: 4,
+  crewGrowth: 1, // extra members per previous raid
+  crewMax: 9,
+  hp: 4, // hot dog hits to bring one down
+  speed: 1.8,
+  raidSeconds: 100, // after this the crew heads for the exit with the loot
+  actEvery: [5, 10],
+  tillLoot: [100, 350],
+  robCooldown: 12, // seconds between robberies per member
+  sabotageChance: 0.35,
+  assaultChance: 0.6,
+  shotRange: 5,
+  shotCooldown: 1.1,
+  hitChance: 0.7,
+  downedSeconds: 3,
+  escapeSafetyHit: 25,
+  defeatSafetyBonus: 20,
+  showSecondsPerVictim: 4,
+  spectatorFee: 6,
+  showHappiness: 25,
+  names: ['Bamboo Bandit', 'Big Bao', 'Dim Sum', 'Kung Pow', 'Mochi', 'Sir Chomps', 'Tumbles', 'Fluffernutter', 'The Patch', 'Snowball', 'Chopsticks'],
 };
 
 /** Crime balancing. Probabilities are per arriving guest / per attempt. */
@@ -92,13 +128,14 @@ export const CRIME = {
 };
 
 export function itemDef(kind) {
-  return RIDES[kind] || STALLS[kind] || SCENERY[kind] || null;
+  return RIDES[kind] || STALLS[kind] || SCENERY[kind] || SPECIAL[kind] || null;
 }
 
 export function itemCategory(kind) {
   if (RIDES[kind]) return 'ride';
   if (STALLS[kind]) return 'stall';
   if (SCENERY[kind]) return 'scenery';
+  if (SPECIAL[kind]) return 'special';
   return null;
 }
 
@@ -113,4 +150,6 @@ export const OBJECTIVES = [
   { id: 'rating-800', text: 'Reach a park rating of 800', test: (s) => s.rating >= 800 },
   { id: 'guard', text: 'Hire a security guard', test: (s) => s.guards >= 1 },
   { id: 'arrests-10', text: 'Make 10 arrests', test: (s) => s.arrests >= 10 },
+  { id: 'pandemonium', text: 'Defeat a Pandemonium raid', test: (s) => s.raidsDefeated >= 1 },
+  { id: 'justice', text: 'Stage a public execution', test: (s) => s.executions >= 1 },
 ];

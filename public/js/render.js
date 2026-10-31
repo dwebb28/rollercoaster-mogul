@@ -1,6 +1,6 @@
 // Isometric canvas renderer. Everything is drawn procedurally — no image assets.
 
-import { GRID, RIDES, STALLS, STAFF } from './catalog.js';
+import { GRID, RIDES, STALLS, STAFF, PANDEMONIUM } from './catalog.js';
 import { TILE, ENTRANCE, idx, actorPos, objectAt } from './sim.js';
 
 export const TW = 64; // tile width in world pixels
@@ -30,6 +30,9 @@ export class Renderer {
     this.camX = 0; // screen-space offset (CSS px) of world origin
     this.camY = 0;
     this.floaters = [];
+    this.particles = [];
+    this.shots = [];
+    this.raid = false;
     this.resize();
     this.centerOn(ENTRANCE.x, ENTRANCE.y - 8);
   }
@@ -82,6 +85,8 @@ export class Renderer {
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.setTransform(this.dpr * this.zoom, 0, 0, this.dpr * this.zoom, this.dpr * this.camX, this.dpr * this.camY);
 
+    this.raid = !!park.raid;
+    for (const f of (park._fx || []).splice(0)) this.addFx(f);
     this.drawGround(park);
 
     const drawables = [];
@@ -105,6 +110,8 @@ export class Renderer {
       else this.drawEntrance(park);
     }
 
+    this.drawShots(dt);
+    this.drawParticles(dt);
     this.drawOverlay(park, view);
     this.drawFloaters(dt);
 
@@ -161,6 +168,14 @@ export class Renderer {
           this.diamond(x + 0.06, y + 0.06, 0.88, 0.88);
           ctx.fillStyle = tile === TILE.ENTRANCE ? '#d9b26a' : '#d7c4a3';
           ctx.fill();
+          const blood = park.stains[i];
+          for (let k = 0; k < blood * 2; k++) {
+            const p = P(x + 0.2 + hash(i * 3 + k) * 0.6, y + 0.2 + hash(i * 5 + k) * 0.6);
+            const r = 2 + hash(i + k * 11) * 4 + blood;
+            ctx.fillStyle = k % 3 ? '#8a0f12' : '#b3151a';
+            ctx.beginPath(); ctx.ellipse(p.x, p.y, r * 1.5, r * 0.75, 0, 0, Math.PI * 2); ctx.fill();
+            if (blood >= 2) { ctx.beginPath(); ctx.ellipse(p.x + r * 1.6, p.y + 1, r * 0.5, r * 0.25, 0, 0, Math.PI * 2); ctx.fill(); }
+          }
           const litter = park.litter[i];
           for (let k = 0; k < litter; k++) {
             const p = P(x + 0.2 + hash(i * 7 + k) * 0.6, y + 0.2 + hash(i * 13 + k) * 0.6);
@@ -208,6 +223,8 @@ export class Renderer {
     const ride = RIDES[o.kind];
     if (ride) this.drawRide(o, ride, t);
     else if (STALLS[o.kind]) this.drawStall(o, STALLS[o.kind]);
+    else if (o.kind === 'securityhq') this.drawHQ(o, t);
+    else if (o.kind === 'retribution') this.drawRig(o, t);
     else this.drawScenery(o, t);
 
     if (ride || STALLS[o.kind]) {
@@ -562,6 +579,7 @@ export class Renderer {
   }
 
   drawGuest(g, p, t, selected) {
+    if (g.crime === 'panda') { this.drawPandaGuest(g, p, t, selected); return; }
     let pos = p;
     if (g.state === 'queue') {
       // Fan queued guests out around their tile so the line is visible.
@@ -586,7 +604,268 @@ export class Renderer {
 
   drawStaff(s, p, t, selected) {
     const col = STAFF[s.role].color;
-    this.person(p, col, s.busy > 0 ? 0 : t, s.id, { hat: shade(col, -0.35), selected });
+    const squad = s.role === 'squad';
+    this.person(p, col, s.busy > 0 ? 0 : t, s.id, { hat: squad ? '#ffd23f' : shade(col, -0.35), selected });
+    if (squad) {
+      // Hot dog gun.
+      const { ctx } = this;
+      const q = P(p.x, p.y);
+      ctx.fillStyle = '#3a3a3a';
+      ctx.fillRect(q.x + 2, q.y - 12, 9, 3);
+      ctx.fillStyle = '#ffd23f';
+      ctx.fillRect(q.x + 3, q.y - 15, 3, 3);
+      ctx.fillStyle = '#b5532b';
+      ctx.beginPath(); ctx.ellipse(q.x + 12, q.y - 10.5, 2.5, 1.5, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Pandemonium
+  // ------------------------------------------------------------------
+
+  /** A panda-costumed figure at screen point (sx, sy) (feet). */
+  panda(sx, sy, { bob = 0, lying = false, charred = 0, rot = 0, scale = 1 } = {}) {
+    const { ctx } = this;
+    const white = charred ? shade('#f5f5f5', -0.9 * charred) : '#f5f5f5';
+    const black = '#1b1b1b';
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.scale(scale, scale);
+    if (lying) ctx.rotate(Math.PI / 2);
+    if (rot) { ctx.translate(0, -10); ctx.rotate(rot); ctx.translate(0, 10); }
+    const y0 = -bob;
+    ctx.fillStyle = black;
+    ctx.fillRect(-3.5, y0 - 6, 3, 6);
+    ctx.fillRect(0.5, y0 - 6, 3, 6);
+    ctx.fillStyle = white;
+    ctx.beginPath(); ctx.ellipse(0, y0 - 10, 5, 5.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = black;
+    ctx.fillRect(-6.5, y0 - 13, 2.5, 6);
+    ctx.fillRect(4, y0 - 13, 2.5, 6);
+    ctx.fillStyle = white;
+    ctx.beginPath(); ctx.arc(0, y0 - 18, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = black;
+    ctx.beginPath(); ctx.arc(-3.5, y0 - 22, 1.8, 0, Math.PI * 2); ctx.arc(3.5, y0 - 22, 1.8, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(-1.8, y0 - 18.5, 1.4, 1.9, 0.4, 0, Math.PI * 2); ctx.ellipse(1.8, y0 - 18.5, 1.4, 1.9, -0.4, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  drawPandaGuest(g, p, t, selected) {
+    const { ctx } = this;
+    const s = P(p.x, p.y);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath(); ctx.ellipse(s.x, s.y, 6, 3, 0, 0, Math.PI * 2); ctx.fill();
+    if (selected) {
+      ctx.strokeStyle = '#ffe24d'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(s.x, s.y, 9, 4.5, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (g.state === 'downed') {
+      this.panda(s.x - 6, s.y - 2, { lying: true });
+      // Condiment carnage and stars.
+      for (let k = 0; k < 5; k++) {
+        ctx.fillStyle = k % 2 ? '#ffd23f' : '#c81d25';
+        ctx.beginPath(); ctx.arc(s.x - 10 + hash(g.id + k) * 20, s.y - 6 + hash(g.id * 3 + k) * 8, 1.8, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = '#ffd23f';
+      for (let k = 0; k < 3; k++) {
+        const a = t * 4 + (k * Math.PI * 2) / 3;
+        ctx.fillText('★', s.x + Math.cos(a) * 8, s.y - 14 + Math.sin(a) * 3);
+      }
+      return;
+    }
+    const bob = g.state === 'walk' ? Math.abs(Math.sin(t * 11 + g.id)) * 1.5 : 0;
+    this.panda(s.x, s.y, { bob });
+    if (g.loot > 0) {
+      ctx.fillStyle = '#8a6a3c';
+      ctx.beginPath(); ctx.arc(s.x + 7, s.y - 9 - bob, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffe28a';
+      ctx.font = 'bold 5px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('$', s.x + 7, s.y - 7.5 - bob);
+    }
+    // Health pips.
+    for (let k = 0; k < PANDEMONIUM.hp; k++) {
+      ctx.fillStyle = k < g.hp ? '#e5484d' : 'rgba(0,0,0,0.35)';
+      ctx.fillRect(s.x - PANDEMONIUM.hp * 2 + k * 4, s.y - 31 - bob, 3, 2);
+    }
+  }
+
+  drawHQ(o, t) {
+    const { ctx } = this;
+    this.box(o.x + 0.1, o.y + 0.1, o.w - 0.2, o.h - 0.2, 30, '#5b7aa6');
+    this.box(o.x + 0.3, o.y + 0.3, o.w - 0.6, o.h - 0.6, 4, '#2b4c7e', 30);
+    const front = P(o.x + o.w / 2, o.y + o.h - 0.1, 18);
+    ctx.fillStyle = '#1d2f4d';
+    ctx.font = 'bold 7px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('SECURITY', front.x - 14, front.y + 2);
+    const top = P(o.x + o.w / 2, o.y + o.h / 2, 38);
+    const on = this.raid && Math.floor(t * 6) % 2;
+    ctx.fillStyle = this.raid ? (on ? '#ff2d2d' : '#2d6bff') : '#777';
+    ctx.beginPath(); ctx.arc(top.x, top.y, 4, 0, Math.PI * 2); ctx.fill();
+    if (this.raid) {
+      const g = ctx.createRadialGradient(top.x, top.y, 2, top.x, top.y, 30);
+      g.addColorStop(0, on ? 'rgba(255,45,45,0.45)' : 'rgba(45,107,255,0.45)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(top.x, top.y, 30, 0, Math.PI * 2); ctx.fill();
+    }
+    // Hot dog flag.
+    const pole = P(o.x + 0.4, o.y + 0.4, 34);
+    ctx.fillStyle = '#ccc'; ctx.fillRect(pole.x, pole.y - 26, 1.5, 26);
+    ctx.fillStyle = '#ffd23f'; ctx.fillRect(pole.x + 1.5, pole.y - 26 + Math.sin(t * 3) * 0.6, 14, 8);
+    ctx.fillStyle = '#b5532b'; ctx.fillRect(pole.x + 4, pole.y - 23 + Math.sin(t * 3) * 0.6, 8, 2.5);
+  }
+
+  /** The Retribution Rig: a catapult that hurls prisoners into a fire pit or a dunk tank. */
+  drawRig(o, t) {
+    const { ctx } = this;
+    const fire = o.pit !== 'water';
+    this.box(o.x + 0.05, o.y + 0.05, o.w - 0.1, o.h - 0.1, 6, '#3d2b26');
+    const pitC = { x: o.x + o.w - 0.9, y: o.y + o.h / 2 };
+    const pc = P(pitC.x, pitC.y, 6);
+    if (fire) {
+      ctx.fillStyle = '#140805';
+      ctx.beginPath(); ctx.ellipse(pc.x, pc.y, 30, 15, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ff5a1f';
+      ctx.beginPath(); ctx.ellipse(pc.x, pc.y, 24, 11, 0, 0, Math.PI * 2); ctx.fill();
+      for (let k = 0; k < 9; k++) {
+        const fx = pc.x - 20 + k * 5;
+        const h = 14 + Math.abs(Math.sin(t * 7 + k * 1.7)) * 20 + (o.show ? 14 : 0);
+        ctx.fillStyle = k % 2 ? 'rgba(255,200,40,0.9)' : 'rgba(255,90,20,0.9)';
+        ctx.beginPath(); ctx.moveTo(fx - 4, pc.y + 2); ctx.quadraticCurveTo(fx + Math.sin(t * 5 + k) * 3, pc.y - h, fx + 4, pc.y + 2); ctx.fill();
+      }
+    } else {
+      this.box(pitC.x - 0.7, pitC.y - 0.7, 1.4, 1.4, 34, '#3a5f7a', 6);
+      this.diamond(pitC.x - 0.62, pitC.y - 0.62, 1.24, 1.24, 6 + 30 + Math.sin(t * 2) * 1.5);
+      ctx.fillStyle = o.show ? 'rgba(150, 30, 40, 0.75)' : 'rgba(80, 170, 230, 0.8)';
+      ctx.fill();
+    }
+
+    // Catapult.
+    const base = P(o.x + 0.9, o.y + o.h / 2, 6);
+    ctx.fillStyle = '#5a3a1e';
+    ctx.fillRect(base.x - 10, base.y - 14, 20, 14);
+    let arm = -0.4;
+    const show = o.show;
+    const per = PANDEMONIUM.showSecondsPerVictim;
+    const k = show ? Math.floor(show.t / per) : -1;
+    const u = show ? (show.t % per) / per : 0;
+    if (show && k < show.victims.length) {
+      arm = u < 0.5 ? -0.4 - u * 1.6 : u < 0.6 ? -1.2 + ((u - 0.5) / 0.1) * 2.4 : 1.2 - Math.min(1, (u - 0.6) / 0.4) * 1.6;
+    }
+    const pivot = { x: base.x, y: base.y - 16 };
+    const tip = { x: pivot.x + Math.sin(arm) * 34, y: pivot.y - Math.cos(arm) * 34 };
+    ctx.strokeStyle = '#7a4b22'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(pivot.x, pivot.y); ctx.lineTo(tip.x, tip.y); ctx.stroke();
+    ctx.fillStyle = '#333';
+    ctx.beginPath(); ctx.arc(pivot.x, pivot.y, 3, 0, Math.PI * 2); ctx.fill();
+
+    // Prisoners waiting in the cage.
+    const cage = P(o.x + 0.6, o.y + o.h - 0.5, 6);
+    const waiting = show ? show.victims.length - k - 1 : 0;
+    for (let w = 0; w < waiting; w++) this.panda(cage.x - 8 + w * 7, cage.y, { scale: 0.8, bob: Math.abs(Math.sin(t * 6 + w)) * 1.5 });
+    ctx.strokeStyle = '#999'; ctx.lineWidth = 1;
+    for (let b = 0; b < 6; b++) { ctx.beginPath(); ctx.moveTo(cage.x - 12 + b * 6, cage.y); ctx.lineTo(cage.x - 12 + b * 6, cage.y - 24); ctx.stroke(); }
+    ctx.strokeRect(cage.x - 12, cage.y - 24, 30, 24);
+
+    if (!show || k >= show.victims.length) return;
+    if (u < 0.6) {
+      this.panda(tip.x, tip.y + 6, { rot: arm * 0.6, bob: Math.sin(t * 20) * 1.5 });
+    } else if (u < 0.75) {
+      // In flight, at full speed.
+      const v = (u - 0.6) / 0.15;
+      const x = tip.x + (pc.x - tip.x) * v;
+      const y = tip.y + (pc.y - tip.y) * v - Math.sin(v * Math.PI) * 70;
+      this.panda(x, y, { rot: v * Math.PI * 4 });
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x - 14, y - 6); ctx.lineTo(x - 30, y - 2); ctx.stroke();
+    } else {
+      const v = (u - 0.75) / 0.25;
+      if (fire) this.panda(pc.x, pc.y + v * 8, { charred: Math.min(1, v * 1.5), lying: v > 0.5 });
+      else {
+        ctx.save();
+        ctx.globalAlpha = 1 - v * 0.7;
+        this.panda(pc.x, pc.y - 30 + v * 22, { rot: Math.sin(t * 14) * 0.4 * (1 - v) });
+        ctx.restore();
+        ctx.fillStyle = 'rgba(220,240,255,0.8)';
+        for (let b = 0; b < 4; b++) {
+          ctx.beginPath(); ctx.arc(pc.x - 8 + hash(b + k) * 16, pc.y - 36 - ((t * 30 + b * 9) % 26), 1.5 + b * 0.4, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+    }
+  }
+
+  addFx(f) {
+    if (f.type === 'shot') { this.shots.push({ ...f, age: 0 }); return; }
+    const burst = (n, make) => { for (let i = 0; i < n && this.particles.length < 600; i++) this.particles.push(make(i)); };
+    const rnd = Math.random;
+    if (f.type === 'blood') {
+      burst(10 * (f.amount || 1), () => ({
+        x: f.x, y: f.y, h: 10, vx: (rnd() - 0.5) * 2, vy: (rnd() - 0.5) * 2, vh: 20 + rnd() * 50,
+        g: 160, life: 0, max: 0.8 + rnd() * 0.5, color: rnd() < 0.5 ? '#9b0d12' : '#cf1b22', size: 1.5 + rnd() * 2,
+      }));
+    } else if (f.type === 'burn') {
+      burst(40, () => ({
+        x: f.x + (rnd() - 0.5) * 0.8, y: f.y + (rnd() - 0.5) * 0.5, h: 10, vx: 0, vy: 0, vh: 40 + rnd() * 80,
+        g: -20, life: 0, max: 0.6 + rnd() * 0.9, color: ['#ffdd55', '#ff8a1f', '#ff3d1f', '#444'][Math.floor(rnd() * 4)], size: 2 + rnd() * 4,
+      }));
+    } else if (f.type === 'splash') {
+      burst(36, () => ({
+        x: f.x, y: f.y, h: 36, vx: (rnd() - 0.5) * 1.6, vy: (rnd() - 0.5) * 1.6, vh: 40 + rnd() * 70,
+        g: 180, life: 0, max: 0.7 + rnd() * 0.5, color: rnd() < 0.7 ? '#9fd6ff' : '#e8f6ff', size: 1.5 + rnd() * 2,
+      }));
+    } else if (f.type === 'condiment') {
+      burst(8, () => ({
+        x: f.x, y: f.y, h: 12, vx: (rnd() - 0.5) * 1.2, vy: (rnd() - 0.5) * 1.2, vh: 20 + rnd() * 30,
+        g: 150, life: 0, max: 0.5, color: rnd() < 0.5 ? '#ffd23f' : '#c81d25', size: 1.5,
+      }));
+    }
+  }
+
+  drawShots(dt) {
+    const { ctx } = this;
+    const FLIGHT = 0.25;
+    this.shots = this.shots.filter((s) => {
+      s.age += dt;
+      if (s.age >= FLIGHT) {
+        if (s.hit) this.addFx({ type: 'condiment', x: s.x1, y: s.y1 });
+        return false;
+      }
+      return true;
+    });
+    for (const s of this.shots) {
+      const v = s.age / FLIGHT;
+      const end = s.hit ? 1 : 1.3;
+      const p = P(s.x0 + (s.x1 - s.x0) * v * end, s.y0 + (s.y1 - s.y0) * v * end, 12);
+      const a = Math.atan2(P(s.x1, s.y1).y - P(s.x0, s.y0).y, P(s.x1, s.y1).x - P(s.x0, s.y0).x);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(a);
+      ctx.fillStyle = '#e8b86a';
+      ctx.beginPath(); ctx.ellipse(0, 0, 6, 2.6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#b5532b';
+      ctx.beginPath(); ctx.ellipse(0, -0.5, 7, 1.6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(-5, -1); ctx.lineTo(-2, 0); ctx.lineTo(1, -1); ctx.lineTo(4, 0); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  drawParticles(dt) {
+    const { ctx } = this;
+    this.particles = this.particles.filter((q) => (q.life += dt) < q.max && q.h > -2);
+    for (const q of this.particles) {
+      q.x += q.vx * dt;
+      q.y += q.vy * dt;
+      q.vh -= q.g * dt;
+      q.h += q.vh * dt;
+      const p = P(q.x, q.y, Math.max(0, q.h));
+      ctx.globalAlpha = 1 - q.life / q.max;
+      ctx.fillStyle = q.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, q.size, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
   }
 
   drawOverlay(park, view) {

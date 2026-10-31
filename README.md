@@ -15,12 +15,20 @@ A browser-based theme park management game. Sign in with Google or GitHub, lay o
   - **Lamp posts** cancel the higher crime rate at dusk.
   - **First aid posts** treat injured guests and make fatal assaults less likely.
 
+  Violence leaves blood on the paths, which upsets guests until janitors scrub it away.
+
   You can tune all of this in `CRIME` in `public/js/catalog.js`.
+- **Pandemonium:** a heist crew in panda costumes raids the park from day 4. Members appear at random spots across the park, rob tills, smash rides and shops, and beat up guests. After a while they run for the exit with the loot, and each raid brings a bigger crew. To fight them:
+  - Build a **Security HQ** (🛡️ Security menu, or `G`).
+  - Hire **Hot Dog Squad** officers. They hunt the pandas with hot dog launchers, and each panda goes down after 4 hits.
+  - If you capture the whole crew, use the **Retribution Rig** to stage a public execution. A catapult hurls the prisoners at full speed into a fire pit, or into a dunk tank where they drown. Spectators pay to watch, every guest gets a big happiness boost, and Safety is fully restored.
+
+  You can tune all of this in `PANDEMONIUM` in `public/js/catalog.js`.
 - **Economy:** you set the entrance fee and the price of every ride and shop. If prices are too high, guests refuse to pay. You pay staff wages and ride upkeep every day.
 - **Guests:** each guest has their own thrill tolerance, budget and needs. Click a guest to see what they're thinking.
 - **Goals and leaderboard:** complete milestones and rank by park value. Your park autosaves to your account.
 
-**Controls:** right-drag, WASD or the arrow keys pan. Scroll or `+`/`-` zooms. `P` selects the path tool, `B` bulldoze, `R` rides, `F` shops, `T` scenery. `Space` pauses, `1`/`2`/`3` change speed, and `Esc` cancels.
+**Controls:** right-drag, WASD or the arrow keys pan. Scroll or `+`/`-` zooms. `P` selects the path tool, `B` bulldoze, `R` rides, `F` shops, `T` scenery, `G` security. `Space` pauses, `1`/`2`/`3` change speed, and `Esc` cancels.
 
 ## Running locally
 

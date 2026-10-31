@@ -1,5 +1,5 @@
 import { api, money, el } from './api.js';
-import { RIDES, STALLS, SCENERY, STAFF, OBJECTIVES, PATH_COST, GRID, itemDef, itemCategory } from './catalog.js';
+import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, PANDEMONIUM, OBJECTIVES, PATH_COST, GRID, itemDef, itemCategory } from './catalog.js';
 import * as Sim from './sim.js';
 import { Renderer } from './render.js';
 
@@ -132,6 +132,9 @@ function updateHud() {
   $('s-day-bar').style.width = `${Sim.dayProgress(park) * 100}%`;
 
   const feed = $('thoughts');
+  const pandas = park.raid ? Sim.activePandas(park).filter((g) => g.state !== 'downed').length : 0;
+  $('raid-banner').hidden = !park.raid;
+  if (park.raid) $('raid-banner').textContent = `🐼 PANDEMONIUM RAID: ${pandas} at large · $${Math.round(park.raid.loot).toLocaleString()} stolen · ${park.raid.captured} captured`;
   const key = park.thoughts.slice(0, 4).map((t) => t.text + t.who).join('|');
   if (feed.dataset.key !== key) {
     feed.dataset.key = key;
@@ -184,10 +187,16 @@ function renderPalette() {
   const box = $('palette');
   if (!state.palette) { box.hidden = true; return; }
   box.hidden = false;
-  const items = { ride: RIDES, stall: STALLS, scenery: SCENERY }[state.palette];
+  const security = {
+    securityhq: SPECIAL.securityhq, retribution: SPECIAL.retribution,
+    camera: SCENERY.camera, lamp: SCENERY.lamp, firstaid: STALLS.firstaid,
+  };
+  const items = { ride: RIDES, stall: STALLS, scenery: SCENERY, security }[state.palette];
   box.replaceChildren(...Object.entries(items).map(([kind, def]) => {
     let meta;
-    if (state.palette === 'ride') meta = `${money(def.cost)} · ${def.w}×${def.h} · Thrill ${def.excitement}/10 · Intensity ${def.intensity}/10`;
+    if (kind === 'securityhq') meta = `${money(def.cost)} · unlocks the Hot Dog Squad`;
+    else if (kind === 'retribution') meta = `${money(def.cost)} · ${def.w}×${def.h} · public executions`;
+    else if (state.palette === 'ride') meta = `${money(def.cost)} · ${def.w}×${def.h} · Thrill ${def.excitement}/10 · Intensity ${def.intensity}/10`;
     else if (state.palette === 'stall') meta = `${money(def.cost)} · ${def.sells === 'restroom' ? 'free for guests' : def.sells === 'firstaid' ? 'treats injured guests' : `sells ${def.sells}`}`;
     else meta = `${money(def.cost)}${def.camera ? ' · deters & identifies criminals' : def.lamp ? ' · lights paths at dusk' : def.beauty ? ` · beauty +${def.beauty}` : def.seat ? ' · guests rest here' : def.bin ? ' · stops litter' : ''}`;
     return el('button', {
@@ -195,7 +204,7 @@ function renderPalette() {
       onclick: () => setTool('build', kind),
     },
     el('div', { class: 'name' },
-      def.icon ? `${def.icon} ` : el('span', { class: 'swatch', style: { background: def.color || '#5a9a4a' } }),
+      kind === 'securityhq' ? '🚔 ' : kind === 'retribution' ? '⚖️ ' : def.icon ? `${def.icon} ` : el('span', { class: 'swatch', style: { background: def.color || '#5a9a4a' } }),
       def.name),
     el('div', { class: 'meta' }, meta));
   }));
@@ -243,7 +252,8 @@ function inspect(tile) {
     return;
   }
   const obj = Sim.objectAt(park, tile.x, tile.y);
-  if (obj && itemCategory(obj.kind) !== 'scenery') showPanel({ type: 'object', id: obj.id });
+  if (obj && itemCategory(obj.kind) === 'special') showPanel({ type: obj.kind, id: obj.id });
+  else if (obj && itemCategory(obj.kind) !== 'scenery') showPanel({ type: 'object', id: obj.id });
   else if (obj) showPanel({ type: 'scenery', id: obj.id });
   else closePanel();
 }
@@ -254,7 +264,7 @@ function inspect(tile) {
 
 function showPanel(panel) {
   state.panel = panel;
-  state.selected = ['object', 'scenery', 'guest', 'staff'].includes(panel.type) ? panel.id : null;
+  state.selected = ['object', 'scenery', 'guest', 'staff', 'securityhq', 'retribution'].includes(panel.type) ? panel.id : null;
   $('panel').hidden = false;
   refreshPanel(true);
 }
@@ -287,7 +297,15 @@ const stepper = (value, onDown, onUp) => el('div', { class: 'stepper' },
   el('button', { class: 'btn btn-small', onclick: onUp, 'aria-label': 'Increase' }, '+'));
 
 const FREE = new Set(['restroom', 'firstaid']);
-const CRIME_ICON = { theft: '👛', assault: '🤕', heist: '💰', homicide: '🚨', arrest: '🚓' };
+const CRIME_ICON = { theft: '👛', assault: '🤕', heist: '💰', homicide: '🩸', arrest: '🚓', raid: '🐼', execution: '⚖️' };
+
+function hireStaff(role) {
+  const res = Sim.hire(state.park, role);
+  if (!res.ok) { toast(res.reason, 'warn'); return; }
+  state.dirty = true;
+  toast(`Hired ${res.staff.name}.`);
+  refreshPanel(true);
+}
 
 const PANELS = {
   welcome: () => el('div', {},
@@ -350,6 +368,18 @@ const PANELS = {
   guest: ({ id }) => {
     const g = state.park._guestById.get(id);
     if (!g) return null;
+    if (g.crime === 'panda') {
+      return el('div', {},
+        el('h2', {}, `🐼 ${g.name}`),
+        el('p', { class: 'error small' }, 'Member of the Pandemonium heist crew'),
+        g.thought && el('div', { class: 'thought-bubble' }, `“${g.thought}”`),
+        el('div', { class: 'need' }, 'Health', bar((g.hp / PANDEMONIUM.hp) * 100, '#e5484d')),
+        kv([
+          ['Status', g.state === 'downed' ? 'Down! Being cuffed' : g.leaving ? 'Fleeing with the loot' : 'Rampaging'],
+          ['Loot carried', money(g.loot)],
+        ]),
+        el('p', { class: 'small muted' }, 'Only the Hot Dog Squad can bring them down. Build a Security HQ to hire them.'));
+    }
     const mood = g.happy > 75 ? '😄' : g.happy > 50 ? '🙂' : g.happy > 30 ? '😐' : '😠';
     const doing = { walk: g.leaving ? 'Heading home' : 'Walking', queue: 'Waiting in line', ride: 'On a ride', busy: 'At a shop', sit: 'Resting on a bench' }[g.state];
     return el('div', {},
@@ -383,13 +413,65 @@ const PANELS = {
       el('div', { class: 'actions' }, el('button', { class: 'btn btn-danger', onclick: () => { Sim.fire(state.park, id); state.dirty = true; closePanel(); } }, 'Fire')));
   },
 
+  securityhq: ({ id }) => {
+    const { park } = state;
+    if (!Sim.getObject(park, id)) return null;
+    const squad = park.staff.filter((s) => s.role === 'squad');
+    const pandas = Sim.activePandas(park);
+    return el('div', {},
+      el('h2', {}, '🚔 Security HQ'),
+      el('p', { class: 'muted small' }, 'Home of the Hot Dog Squad: officers armed with hot dog launchers who hunt down Pandemonium raiders.'),
+      kv([
+        ['Squad officers', squad.length],
+        ['Raid status', park.raid ? `ACTIVE: ${pandas.length} at large` : 'All quiet'],
+        ['Pandemonium captured', park.pandemonium.captured],
+        ['Prisoners awaiting justice', park.captives.length],
+      ]),
+      el('div', { class: 'actions' },
+        el('button', { class: 'btn btn-primary', onclick: () => hireStaff('squad') }, `Hire officer (${money(STAFF.squad.wage)}/day)`),
+        el('button', { class: 'btn btn-danger', onclick: () => demolish(Sim.getObject(park, id)) }, 'Demolish')));
+  },
+
+  retribution: ({ id }) => {
+    const { park } = state;
+    const rig = Sim.getObject(park, id);
+    if (!rig) return null;
+    const show = rig.show;
+    const mode = (m, label) => el('button', {
+      class: `btn${rig.pit === m ? ' btn-primary' : ''}`, disabled: !!show,
+      onclick: () => { Sim.setRigMode(park, id, m); state.dirty = true; refreshPanel(true); },
+    }, label);
+    return el('div', {},
+      el('h2', {}, '⚖️ Retribution Rig'),
+      el('p', { class: 'muted small' }, 'A siege catapult that hurls captured Pandemonium members at full speed into a roaring fire pit or a dunk tank they never surface from. Crowds pay to watch.'),
+      el('h3', {}, 'Method'),
+      el('div', { class: 'actions' }, mode('fire', '🔥 Fire pit'), mode('water', '🌊 Dunk tank')),
+      el('h3', {}, `Prisoners (${park.captives.length})`),
+      park.captives.length
+        ? el('ul', { class: 'list' }, park.captives.map((c) => el('li', {}, `🐼 ${c.name}`)))
+        : el('p', { class: 'small muted' }, show ? 'Show in progress.' : 'No prisoners. Defeat a Pandemonium raid to capture some.'),
+      show && kv([['Now', `${show.victims[Math.min(show.victims.length - 1, Math.floor(show.t / PANDEMONIUM.showSecondsPerVictim))]}`], ['Spectators', show.spectators]]),
+      el('div', { class: 'actions' },
+        el('button', {
+          class: 'btn btn-primary', disabled: !!show || !park.captives.length,
+          onclick: () => {
+            const res = Sim.execute(park, id, rig.pit);
+            if (!res.ok) toast(res.reason, 'warn');
+            state.dirty = true;
+            refreshPanel(true);
+          },
+        }, 'Stage public execution'),
+        el('button', { class: 'btn btn-danger', disabled: !!show, onclick: () => demolish(rig) }, 'Demolish')),
+      el('p', { class: 'small muted' }, `Spectators pay ${money(PANDEMONIUM.spectatorFee)}. Afterwards every guest gets a big happiness boost and Safety is fully restored.`));
+  },
+
   staff_list: () => {
     const { park } = state;
     return el('div', {},
       el('h2', {}, 'Staff'),
       el('p', { class: 'small muted' }, 'Janitors sweep up litter. Mechanics repair broken rides. Security guards deter crime and arrest suspects. Wages are paid daily.'),
       el('div', { class: 'actions' }, Object.entries(STAFF).map(([role, def]) =>
-        el('button', { class: 'btn', onclick: () => { Sim.hire(park, role); state.dirty = true; toast(`Hired a ${def.name.toLowerCase()}.`); refreshPanel(true); } },
+        el('button', { class: 'btn', onclick: () => hireStaff(role) },
           `Hire ${def.name} (${money(def.wage)}/day)`))),
       el('h3', {}, `Employees (${park.staff.length})`),
       park.staff.length
@@ -427,6 +509,14 @@ const PANELS = {
         ['Average happiness', s.guests ? `${Math.round(s.avgHappy)}%` : '—'],
         ['Litter on paths', s.litter],
         ['Guests all-time', park.stats.totalGuests.toLocaleString()],
+      ]),
+      el('h3', {}, '🐼 Pandemonium'),
+      kv([
+        ['Raids', park.pandemonium.raids],
+        ['Defeated / escaped members', `${park.pandemonium.captured} / ${park.pandemonium.escaped}`],
+        ['Prisoners awaiting justice', park.captives.length],
+        ['Executions', park.pandemonium.executions],
+        ['Status', park.raid ? `RAID IN PROGRESS: ${Sim.activePandas(park).length} at large` : `Quiet (they may strike from day ${park.pandemonium.nextRaidDay})`],
       ]),
       el('h3', {}, 'Safety & security'),
       el('div', { class: 'need' }, 'Safety', bar(s.safety, s.safety > 70 ? '#2f9e44' : s.safety > 40 ? '#e8a33a' : '#e5484d')),
@@ -616,6 +706,7 @@ function bindInput() {
     else if (k === 'r') togglePalette('ride');
     else if (k === 'f') togglePalette('stall');
     else if (k === 't') togglePalette('scenery');
+    else if (k === 'g') togglePalette('security');
     else if (k === '=' || k === '+') renderer.zoomAt(1.15, canvas.clientWidth / 2, canvas.clientHeight / 2);
     else if (k === '-') renderer.zoomAt(1 / 1.15, canvas.clientWidth / 2, canvas.clientHeight / 2);
   });
