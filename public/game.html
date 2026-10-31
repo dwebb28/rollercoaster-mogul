@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Rollercoaster Mogul — My Park</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="game">
+  <header id="topbar">
+    <a href="/" class="brand" title="Home"><img src="/favicon.svg" alt="" width="26" height="26"></a>
+    <button id="park-name" class="park-name" title="Park settings">…</button>
+    <div class="stat" title="Cash"><span class="label">Cash</span><span id="s-cash">$0</span></div>
+    <div class="stat" title="Guests in park"><span class="label">Guests</span><span id="s-guests">0</span></div>
+    <div class="stat" title="Park rating (0–999)"><span class="label">Rating</span><span id="s-rating">0</span><span class="meter"><span id="s-rating-bar"></span></span></div>
+    <div class="stat" title="Day"><span class="label">Day</span><span id="s-day">1</span><span class="meter"><span id="s-day-bar"></span></span></div>
+    <div class="speed" role="group" aria-label="Game speed">
+      <button data-speed="0" title="Pause (Space)">❚❚</button>
+      <button data-speed="1" title="Normal speed (1)">▶</button>
+      <button data-speed="2" title="Fast (2)">▶▶</button>
+      <button data-speed="4" title="Fastest (3)">▶▶▶</button>
+    </div>
+    <div class="spacer"></div>
+    <span id="save-status" class="muted small"></span>
+    <button id="save-btn" class="btn btn-small">Save</button>
+    <div class="user">
+      <img id="me-avatar" alt="" width="26" height="26" hidden>
+      <span id="me-name" class="small"></span>
+      <button id="logout" class="btn btn-small btn-ghost">Sign out</button>
+    </div>
+  </header>
+
+  <canvas id="view"></canvas>
+
+  <nav id="toolbar" aria-label="Tools">
+    <button data-tool="inspect" title="Inspect (Esc)">🔍<span>Inspect</span></button>
+    <button data-tool="path" title="Build path (P)">🟫<span>Path</span></button>
+    <button data-palette="ride" title="Rides (R)">🎢<span>Rides</span></button>
+    <button data-palette="stall" title="Shops (F)">🍔<span>Shops</span></button>
+    <button data-palette="scenery" title="Scenery (T)">🌳<span>Scenery</span></button>
+    <button data-tool="bulldoze" title="Bulldoze (B)">🚜<span>Bulldoze</span></button>
+    <button data-panel="staff" title="Staff">🧹<span>Staff</span></button>
+    <button data-panel="park" title="Park & finances">📊<span>Park</span></button>
+    <button data-panel="leaderboard" title="Leaderboard">🏆<span>Ranks</span></button>
+  </nav>
+
+  <div id="palette" class="palette" hidden></div>
+  <aside id="panel" class="panel" hidden>
+    <button class="panel-close" aria-label="Close">×</button>
+    <div id="panel-body"></div>
+  </aside>
+  <div id="thoughts" class="thoughts" aria-live="polite"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="hint" class="hint">Right-drag or arrow keys to pan · scroll to zoom</div>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>

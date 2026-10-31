@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rollercoaster Mogul</title>
+  <meta name="description" content="Build and run your own theme park in the browser.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="landing">
+  <main class="hero">
+    <div class="hero-card">
+      <img src="/favicon.svg" alt="" class="hero-logo" width="72" height="72">
+      <h1>Rollercoaster Mogul</h1>
+      <p class="tagline">Lay out paths, build thrilling rides, keep your guests fed and happy, and grow the most valuable theme park on the leaderboard.</p>
+
+      <div id="signed-in" hidden>
+        <p>Welcome back, <strong id="me-name"></strong>!</p>
+        <a class="btn btn-primary btn-lg" href="/game.html">Open my park</a>
+        <button class="btn btn-link" id="logout">Sign out</button>
+      </div>
+
+      <div id="signed-out" hidden>
+        <div id="providers" class="providers"></div>
+        <form id="dev-login" class="dev-login" hidden>
+          <p class="muted">Local dev login (no OAuth needed)</p>
+          <div class="row">
+            <input name="name" placeholder="Your name" maxlength="40" required autocomplete="nickname">
+            <button class="btn btn-primary" type="submit">Play</button>
+          </div>
+        </form>
+        <p id="no-providers" class="muted" hidden>No sign-in providers are configured. See the README to set up Google or GitHub login.</p>
+      </div>
+      <p id="login-error" class="error" hidden>Sign-in failed. Please try again.</p>
+    </div>
+
+    <section class="hero-card board">
+      <h2>Top parks</h2>
+      <table class="leaderboard">
+        <thead><tr><th>#</th><th>Park</th><th>Owner</th><th class="num">Value</th><th class="num">Rating</th></tr></thead>
+        <tbody id="board-rows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+  <script type="module" src="/js/landing.js"></script>
+</body>
+</html>
