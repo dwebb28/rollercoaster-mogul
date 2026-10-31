@@ -475,7 +475,8 @@ const PANELS = {
         el('h2', {}, `🐼 ${g.name}`),
         el('p', { class: 'error small' }, 'Member of the Pandemonium heist crew'),
         g.thought && el('div', { class: 'thought-bubble' }, `“${g.thought}”`),
-        el('div', { class: 'need' }, 'Health', bar((g.hp / PANDEMONIUM.hp) * 100, '#e5484d')),
+        el('div', { class: 'need' }, 'Health', bar((g.hp / g.maxHp) * 100, '#e5484d')),
+        kv([['Bamboo accuracy', `${Math.round(g.acc * 100)}%`]]),
         kv([
           ['Status', g.state === 'downed' ? 'Down! Being cuffed' : g.leaving ? 'Fleeing with the loot' : 'Rampaging'],
           ['Loot carried', money(g.loot)],
@@ -509,11 +510,16 @@ const PANELS = {
   staff: ({ id }) => {
     const s = state.park.staff.find((m) => m.id === id);
     if (!s) return null;
-    const job = s.chase ? 'Chasing a suspect' : s.busy > 0 ? (s.role === 'janitor' ? 'Sweeping' : 'Fixing a ride') : s.task ? 'Heading to a broken ride' : 'Patrolling';
+    const job = s.down > 0 ? 'Knocked out' : s.chase ? 'Chasing a suspect' : s.busy > 0 ? (s.role === 'janitor' ? 'Sweeping' : 'Fixing a ride') : s.task ? 'Heading to a broken ride' : 'Patrolling';
     return el('div', {},
       el('h2', {}, s.name),
       el('p', { class: 'muted small' }, `${STAFF[s.role].name} · ${job}`),
-      kv([['Wage', `${money(STAFF[s.role].wage)}/day`]]),
+      s.down > 0 && el('p', { class: 'error small' }, `💫 Knocked out: back on duty in ${Math.ceil(s.down)}s`),
+      el('div', { class: 'need' }, 'Health', bar((s.hp / s.maxHp) * 100, '#e5484d')),
+      kv([
+        ['Wage', `${money(STAFF[s.role].wage)}/day`],
+        s.role === 'squad' && ['Hot dog accuracy', `${Math.round(s.acc * 100)}%`],
+      ]),
       el('div', { class: 'actions' }, el('button', { class: 'btn btn-danger', onclick: () => { Sim.fire(state.park, id); state.dirty = true; closePanel(); } }, 'Fire')));
   },
 

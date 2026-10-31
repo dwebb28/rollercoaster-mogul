@@ -756,9 +756,9 @@ export class Renderer {
       ctx.fillText('$', s.x + 7, s.y - 7.5 - bob);
     }
     // Health pips.
-    for (let k = 0; k < PANDEMONIUM.hp; k++) {
+    for (let k = 0; k < g.maxHp; k++) {
       ctx.fillStyle = k < g.hp ? '#e5484d' : 'rgba(0,0,0,0.35)';
-      ctx.fillRect(s.x - PANDEMONIUM.hp * 2 + k * 4, s.y - 31 - bob, 3, 2);
+      ctx.fillRect(s.x - g.maxHp * 2 + k * 4, s.y - 31 - bob, 3, 2);
     }
   }
 

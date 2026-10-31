@@ -65,10 +65,10 @@ export const SCENERY = {
 };
 
 export const STAFF = {
-  janitor: { name: 'Janitor', wage: 30, color: '#3fa34d' },
-  mechanic: { name: 'Mechanic', wage: 45, color: '#e07b24' },
-  guard: { name: 'Security Guard', wage: 55, color: '#2b4c7e' },
-  squad: { name: 'Hot Dog Squad Officer', wage: 90, color: '#d63c2f', requires: 'securityhq' },
+  janitor: { name: 'Janitor', wage: 30, color: '#3fa34d', hp: 3 },
+  mechanic: { name: 'Mechanic', wage: 45, color: '#e07b24', hp: 3 },
+  guard: { name: 'Security Guard', wage: 55, color: '#2b4c7e', hp: 5 },
+  squad: { name: 'Hot Dog Squad Officer', wage: 90, color: '#d63c2f', requires: 'securityhq', hp: 6, accuracy: [0.65, 0.8] },
 };
 
 /** Special structures for dealing with the Pandemonium heist crew. */
@@ -86,7 +86,7 @@ export const PANDEMONIUM = {
   crewBase: 4,
   crewGrowth: 1, // extra members per previous raid
   crewMax: 9,
-  hp: 4, // hot dog hits to bring one down
+  hp: [3, 5], // hot dog hits to bring one down (random per panda)
   speed: 1.8,
   raidSeconds: 100, // after this the crew heads for the exit with the loot
   actEvery: [5, 10],
@@ -96,7 +96,12 @@ export const PANDEMONIUM = {
   assaultChance: 0.6,
   shotRange: 5,
   shotCooldown: 1.1,
-  hitChance: 0.7,
+  // Pandas fight back with thrown bamboo, but are weaker than the squad on
+  // average: less health, worse aim, slower throws.
+  pandaAccuracy: [0.4, 0.6],
+  throwRange: 4,
+  throwCooldown: 1.3,
+  knockoutSeconds: 35, // staff out of action when their health runs out
   downedSeconds: 3,
   escapeSafetyHit: 25,
   defeatSafetyBonus: 20,

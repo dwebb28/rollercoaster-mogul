@@ -428,3 +428,29 @@ test('barbed wire lockdown keeps everyone inside', () => {
   const q = Sim.deserialize(JSON.parse(JSON.stringify(Sim.serialize(p))));
   assert.equal(q.fence, true);
 });
+
+test('pandas fight back but are weaker than the squad on average', async () => {
+  const { PANDEMONIUM, STAFF } = await import('../public/js/catalog.js');
+  const avg = ([a, b]) => (a + b) / 2;
+  const pandaDps = avg(PANDEMONIUM.pandaAccuracy) / PANDEMONIUM.throwCooldown;
+  const squadDps = avg(STAFF.squad.accuracy) / PANDEMONIUM.shotCooldown;
+  assert.ok(pandaDps < squadDps, 'pandas hit less often');
+  assert.ok(avg(PANDEMONIUM.hp) < STAFF.squad.hp, 'pandas have less health');
+
+  // A lone officer against a full crew gets knocked out at some point.
+  const p = securePark(91, 1);
+  p.pandemonium.nextRaidDay = Infinity;
+  Sim.startRaid(p);
+  let knocked = false;
+  for (let i = 0; i < 2000 && p.raid; i++) {
+    Sim.step(p, 0.1);
+    if (p.staff.some((s) => s.role === 'squad' && s.down > 0)) knocked = true;
+  }
+  assert.ok(knocked, 'the officer was knocked out');
+  const officer = p.staff.find((s) => s.role === 'squad');
+  for (const g of p.guests) if (g.crime === 'panda') g.gone = true; // end the fight
+  Object.assign(officer, { down: 1, hp: 0 });
+  run(p, 2);
+  assert.equal(officer.down, 0);
+  assert.equal(officer.hp, officer.maxHp, 'recovers to full health');
+});

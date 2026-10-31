@@ -215,7 +215,9 @@ export function deserialize(data) {
       timeIn: num(g.timeIn, 0, 1e6), leaving: g.leaving === true,
       rides: num(g.rides, 0, 1e4),
       crime: CRIME.types[g.crime] || g.crime === 'panda' ? g.crime : null,
-      hp: num(g.hp, 0, PANDEMONIUM.hp, PANDEMONIUM.hp),
+      hp: num(g.hp, 0, PANDEMONIUM.hp[1], PANDEMONIUM.hp[1]),
+      maxHp: num(g.maxHp, 1, PANDEMONIUM.hp[1], PANDEMONIUM.hp[1]),
+      acc: num(g.acc, 0, 1, PANDEMONIUM.pandaAccuracy[0]),
       crimeT: num(g.crimeT, 0, 1e4, 20),
       record: cleanRecord(g.record),
       gang: CRIME.gangs.includes(g.gang) ? g.gang : null,
@@ -234,7 +236,11 @@ export function deserialize(data) {
   for (const s of data.staff) {
     if (!s || !STAFF[s.role] || !okPos(s)) continue;
     ensureId(s.id);
-    park.staff.push({ ...newStaff(s.role, s.id, s.x, s.y), nx: s.nx, ny: s.ny, name: String(s.name ?? '').slice(0, 40) });
+    const st = newStaff(s.role, s.id, s.x, s.y);
+    park.staff.push({
+      ...st, nx: s.nx, ny: s.ny, name: String(s.name ?? '').slice(0, 40),
+      hp: num(s.hp, 0, st.maxHp, st.maxHp), acc: num(s.acc, 0, 1, st.acc), down: num(s.down, 0, 600, 0),
+    });
   }
   park.nextId = Math.max(maxId + 1, Number.isInteger(data.nextId) ? data.nextId : 0);
 
@@ -494,6 +500,7 @@ export function hire(park, role) {
     ? newStaff(role, park.nextId++, start % GRID, (start / GRID) | 0)
     : newStaff(role, park.nextId++, ENTRANCE.x, ENTRANCE.y - 1);
   s.name = `${pick(park, FIRST_NAMES)} the ${STAFF[role].name}`;
+  if (STAFF[role].accuracy) s.acc = randIn(park, STAFF[role].accuracy);
   park.staff.push(s);
   return { ok: true, staff: s };
 }
@@ -504,7 +511,12 @@ export function fire(park, id) {
 }
 
 function newStaff(role, id, x, y) {
-  return { id, role, name: '', x, y, nx: x, ny: y, lx: x, ly: y, t: 0, route: null, task: null, busy: 0, chase: null, cool: 0 };
+  const def = STAFF[role];
+  const acc = def.accuracy ? (def.accuracy[0] + def.accuracy[1]) / 2 : 0;
+  return {
+    id, role, name: '', x, y, nx: x, ny: y, lx: x, ly: y, t: 0, route: null, task: null, busy: 0, chase: null, cool: 0,
+    hp: def.hp, maxHp: def.hp, acc, down: 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,6 +1068,11 @@ function updateRide(park, obj, dt) {
 }
 
 function updateStaff(park, s, dt) {
+  if (s.down > 0) {
+    s.down -= dt;
+    if (s.down <= 0) { s.down = 0; s.hp = s.maxHp; }
+    return;
+  }
   if (s.role === 'squad') squadShoot(park, s, dt);
   if (s.busy > 0) {
     s.busy -= dt;
@@ -1388,8 +1405,10 @@ export function startRaid(park) {
       id: park.nextId++, name, shirt: '#ffffff',
       x, y, nx: x, ny: y, lx: x, ly: y, t: 0,
       cash: 0, happy: 50, hunger: 0, thirst: 0, bladder: 0, energy: 100, nausea: 0, pref: 10, thrift: 0, timeIn: 0,
-      crime: 'panda', hp: PANDEMONIUM.hp, crimeT: randIn(park, PANDEMONIUM.actEvery),
+      crime: 'panda', crimeT: randIn(park, PANDEMONIUM.actEvery),
+      maxHp: Math.round(randIn(park, PANDEMONIUM.hp)), acc: randIn(park, PANDEMONIUM.pandaAccuracy), cool: 0,
     };
+    g.hp = g.maxHp;
     park.guests.push(g);
     park._guestById.set(g.id, g);
   }
@@ -1405,6 +1424,7 @@ function updatePanda(park, g, dt) {
     if (g.busy <= 0) capturePanda(park, g);
     return;
   }
+  pandaFight(park, g, dt);
   if (g.state === 'busy') {
     g.busy -= dt;
     if (g.busy <= 0) g.state = 'walk';
@@ -1537,7 +1557,7 @@ function squadShoot(park, s, dt) {
   }
   if (!target) return;
   s.cool = PANDEMONIUM.shotCooldown;
-  const hit = rand(park) < PANDEMONIUM.hitChance;
+  const hit = rand(park) < s.acc;
   const to = actorPos(target);
   fx(park, { type: 'shot', x0: me.x, y0: me.y, x1: to.x, y1: to.y, hit });
   if (!hit) return;
@@ -1549,6 +1569,37 @@ function squadShoot(park, s, dt) {
     target.nx = target.x; target.ny = target.y; target.t = 0;
     think(park, target, 'Bested by a hot dog...', true);
   }
+}
+
+/** Pandas throw bamboo at nearby security staff. */
+function pandaFight(park, g, dt) {
+  g.cool = Math.max(0, (g.cool || 0) - dt);
+  if (g.cool > 0) return;
+  const me = actorPos(g);
+  let target = null, best = PANDEMONIUM.throwRange ** 2;
+  for (const s of park.staff) {
+    if ((s.role !== 'squad' && s.role !== 'guard') || s.down > 0) continue;
+    const d = dist2(actorPos(s), me);
+    if (d <= best) { best = d; target = s; }
+  }
+  if (!target) return;
+  g.cool = PANDEMONIUM.throwCooldown;
+  const hit = rand(park) < g.acc;
+  const to = actorPos(target);
+  fx(park, { type: 'bamboo', x0: me.x, y0: me.y, x1: to.x, y1: to.y, hit });
+  if (!hit) return;
+  target.hp--;
+  if (target.hp > 0) return;
+  target.down = PANDEMONIUM.knockoutSeconds;
+  target.chase = null;
+  target.route = null;
+  target.busy = 0;
+  target.nx = target.x; target.ny = target.y; target.t = 0;
+  const i = idx(target.x, target.y);
+  if (park.tiles[i] !== TILE.GRASS) park.stains[i] = Math.min(3, park.stains[i] + 1);
+  fx(park, { type: 'blood', x: to.x, y: to.y, amount: 1 });
+  logIncident(park, 'assault', `${target.name} was knocked out by ${g.name} of Pandemonium.`);
+  park._events.push({ type: 'warn', text: `🐼 ${g.name} knocked out ${target.name}!` });
 }
 
 /** Squad officers hunt the nearest panda during a raid. */
