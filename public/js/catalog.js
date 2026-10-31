@@ -110,7 +110,10 @@ export const PANDEMONIUM = {
 export const CRIME = {
   baseRate: 0.035, // share of arriving guests who are criminals
   lowRatingRate: 0.03, // extra share when the park rating is below 400
-  types: { pickpocket: 0.6, brawler: 0.3, robber: 0.1 },
+  types: { pickpocket: 0.6, brawler: 0.3, robber: 0.1, dealer: 0 },
+  dealerRate: 0.04, // share of arriving guests who are drug dealers (on top of baseRate)
+  gangs: ['The Sticky Fingers', 'Cotton Candy Cartel', 'The Funnel Cake Mob', 'Teacup Triad', 'The Loop-de-Loopers'],
+  gangChance: 0.5, // chance a born criminal belongs to a gang (dealers always do)
   guardDeterRadius: 4,
   guardDeterFactor: 0.15, // attempt chance multiplier with a guard close by
   guardChaseRadius: 8,
@@ -123,7 +126,26 @@ export const CRIME = {
   homicideChance: 0.03, // chance an assault turns fatal
   firstAidHomicideFactor: 0.4,
   homicideLegalCost: 2000,
-  safetyHit: { theft: 2, assault: 6, heist: 8, homicide: 40 },
+  safetyHit: { theft: 2, assault: 6, heist: 8, homicide: 40, drugs: 1 },
+  // Drugs
+  dealPrice: [10, 25],
+  dealAcceptBase: 0.2, // plus up to +0.5 for unhappy guests
+  highSeconds: [60, 120],
+  gangRecruitChance: 0.3, // chance a guest joins a gang when their high wears off
+  corruptVendorChance: 0.2, // chance a new food/drink stall's vendor deals on the side
+  corruptOfferChance: 0.25,
+  corruptExposeChance: 0.5, // per deal, if a guard or camera is watching the stall
+  replaceVendorCost: 250,
+  // Sentencing
+  fineBase: 150,
+  finePerOffence: 75,
+  fineStolenMultiplier: 1.5,
+  pandaFine: 1000,
+  releaseSafetyHit: 3,
+  // Barbed wire perimeter
+  fenceCost: 15000,
+  fenceUpkeep: 120,
+  lockedRatingPenalty: 60,
   safetyRecovery: 0.03, // safety points per game-second
 };
 

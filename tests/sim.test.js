@@ -265,7 +265,7 @@ test('an undefended park loses money to Pandemonium and they escape', () => {
   assert.ok(p.pandemonium.escaped > 0);
   assert.equal(p.pandemonium.defeated, 0);
   assert.ok(p.cash < cash);
-  assert.equal(p.captives.length, 0);
+  assert.equal(p.custody.length, 0);
 });
 
 test('the squad shoots down the crew, recovers loot and takes prisoners', () => {
@@ -275,7 +275,8 @@ test('the squad shoots down the crew, recovers loot and takes prisoners', () => 
   runRaid(p);
   assert.equal(p.pandemonium.defeated, 1);
   assert.equal(p.pandemonium.escaped, 0);
-  assert.equal(p.captives.length, size);
+  assert.equal(p.custody.length, size, 'captured raiders await sentencing');
+  assert.ok(p.custody.every((c) => c.kind === 'panda' && c.record.robbery + c.record.assault >= 0));
   assert.ok(p.objectives.includes('pandemonium'));
 });
 
@@ -284,13 +285,14 @@ test('public execution consumes prisoners, entertains guests and restores safety
   Sim.startRaid(p);
   runRaid(p);
   const rig = p.objects.find((o) => o.kind === 'retribution');
-  const prisoners = p.captives.length;
+  const prisoners = p.custody.length;
   p.safety = 40;
-  assert.equal(Sim.execute(p, rig.id, 'water').ok, true);
+  for (const c of [...p.custody]) assert.equal(Sim.sentence(p, c.id, 'execute', 'water').ok, true);
+  assert.equal(p.custody.length, 0);
   assert.equal(rig.pit, 'water');
-  assert.equal(p.captives.length, 0);
+  assert.ok(rig.show, 'first sentence starts the show');
   assert.equal(Sim.execute(p, rig.id, 'fire').ok, false, 'one show at a time');
-  run(p, prisoners * 4 + 5);
+  run(p, prisoners * (4 + 2) + 10);
   assert.equal(rig.show, null);
   assert.equal(p.pandemonium.executions, prisoners);
   assert.equal(p.safety, 100);
@@ -318,4 +320,111 @@ test('raids, prisoners and stains survive save/load', () => {
   assert.equal(q.captives[0].name, 'Mochi');
   assert.equal(q.stains[Sim.idx(20, 30)], 2);
   assert.equal(q.pandemonium.raids, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Sentencing, drugs, gangs, lockdown
+// ---------------------------------------------------------------------------
+
+test('arrested suspects keep their record and go into custody for sentencing', () => {
+  const p = samplePark(81);
+  run(p, 60);
+  const thief = plantCriminal(p, 'pickpocket');
+  crowdAround(p, 20, 26, thief);
+  const guard = Sim.hire(p, 'guard').staff;
+  Object.assign(guard, { x: 20, y: 27, nx: 20, ny: 27, t: 0 });
+  let tries = 0;
+  while (!p.custody.length && tries++ < 600) { if (thief.crimeT > 1) thief.crimeT = 0; Sim.step(p, 0.1); }
+  assert.equal(p.custody.length, 1);
+  const c = p.custody[0];
+  assert.equal(c.name, thief.name);
+  assert.ok(c.record.theft >= 1);
+  assert.ok(Sim.knownSuspects(p).every((g) => g.id !== thief.id), 'no longer at large');
+});
+
+test('sentencing: release, fine, and execute', () => {
+  const p = samplePark(82);
+  p.cash = 100000;
+  const mk = (id) => ({ id, name: `S${id}`, kind: 'robber', gang: null, by: 'x', day: 1,
+    record: { theft: 1, assault: 0, robbery: 2, drugs: 0, homicide: 0, stolen: 400 } });
+  p.custody.push(mk(9001), mk(9002), mk(9003));
+  const safety = p.safety;
+  assert.equal(Sim.sentence(p, 9001, 'release').ok, true);
+  assert.ok(p.safety < safety || safety === 0);
+  const cash = p.cash;
+  const fine = Sim.fineFor(mk(0));
+  assert.equal(fine, 150 + 3 * 75 + 600);
+  assert.equal(Sim.sentence(p, 9002, 'fine').fine, fine);
+  assert.equal(p.cash, cash + fine);
+  assert.equal(Sim.sentence(p, 9003, 'execute').ok, false, 'needs a rig');
+  assert.equal(p.custody.length, 1, 'still in custody after a refused execution');
+  assert.ok(Sim.build(p, 'retribution', 21, 30).ok);
+  assert.equal(Sim.sentence(p, 9003, 'execute', 'fire').ok, true);
+  run(p, 10);
+  assert.equal(p.pandemonium.executions, 1);
+  assert.equal(p.custody.length, 0);
+});
+
+test('dealers sell drugs; high guests cannot find the exit and may join gangs', () => {
+  const p = samplePark(83);
+  run(p, 60);
+  const dealer = plantCriminal(p, 'dealer');
+  dealer.gang = 'Teacup Triad';
+  crowdAround(p, 20, 26, dealer);
+  for (const v of p.guests) if (v !== dealer) v.happy = 0; // miserable guests always say yes
+  let tries = 0;
+  while (!p.stats.drugDeals && tries++ < 600) { if (dealer.crimeT > 1) dealer.crimeT = 0; Sim.step(p, 0.1); }
+  assert.ok(p.stats.drugDeals >= 1);
+  assert.ok(dealer.record.drugs >= 1);
+  const high = p.guests.find((g) => g.high > 0);
+  assert.ok(high, 'someone is high');
+
+  // A high guest who wants to leave wanders instead of heading for the gate.
+  Object.assign(high, { leaving: true, route: null, state: 'walk', busy: 0, high: 30 });
+  run(p, 20);
+  assert.ok(p.guests.includes(high) && high.leaving, 'still lost in the park');
+
+  // Coming down can recruit them into a gang.
+  let recruited = 0;
+  for (let i = 0; i < 40; i++) {
+    const g = p.guests.find((x) => !x.crime && x.state === 'walk');
+    if (!g) break;
+    g.high = 0.05;
+    Sim.step(p, 0.1);
+    if (g.crime) { recruited++; assert.ok(g.gang); }
+  }
+  assert.ok(recruited > 0, 'some guests joined gangs');
+});
+
+test('corrupt vendors can be exposed and replaced', () => {
+  const p = samplePark(84);
+  const lemon = p.objects.find((o) => o.kind === 'lemonade');
+  Object.assign(lemon, { corrupt: true, exposed: false, deals: 0 });
+  Sim.build(p, 'camera', 18, 27);
+  for (const g of p.guests) g.happy = 0;
+  run(p, 300);
+  assert.ok(lemon.deals > 0, 'vendor sold drugs');
+  const res = Sim.replaceVendor(p, lemon.id);
+  assert.equal(res.wasCorrupt, true);
+  assert.equal(lemon.corrupt, false);
+});
+
+test('barbed wire lockdown keeps everyone inside', () => {
+  const p = samplePark(85);
+  run(p, 60);
+  assert.equal(Sim.setLocked(p, true).ok, false, 'needs the fence');
+  p.cash = 100000;
+  assert.equal(Sim.installFence(p).ok, true);
+  assert.equal(Sim.setLocked(p, true).ok, true);
+  const before = new Set(p.guests.map((g) => g.id));
+  for (const g of p.guests) { g.leaving = true; g.route = null; }
+  const total = p.stats.totalGuests;
+  run(p, 60);
+  assert.equal(p.stats.totalGuests, total, 'nobody new gets in');
+  assert.ok([...before].every((id) => p.guests.some((g) => g.id === id)), 'nobody gets out');
+  Sim.setLocked(p, false);
+  run(p, 60);
+  assert.ok([...before].some((id) => !p.guests.some((g) => g.id === id)), 'guests leave once unlocked');
+  const q = Sim.deserialize(JSON.parse(JSON.stringify(Sim.serialize(p))));
+  assert.equal(q.fence, true);
 });

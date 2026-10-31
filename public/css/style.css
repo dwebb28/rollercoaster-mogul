@@ -163,3 +163,15 @@ input.text { width: 100%; padding: 0.45rem 0.6rem; border: 1px solid var(--borde
 .hint { position: fixed; right: 12px; bottom: 16px; z-index: 8; color: rgba(255, 255, 255, 0.65); font-size: 0.75rem; pointer-events: none; }
 @media (max-width: 900px) { .hint, .thoughts { display: none; } #topbar .user .small { display: none; } }
 @keyframes fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.btn-alert { background: #ffd23f; border-color: #e0b400; color: #222; }
+#lock-btn.locked { background: #b42318; border-color: #ff8b8f; color: #fff; }
+.modal { position: fixed; inset: 0; z-index: 30; background: rgba(10, 10, 10, 0.55); display: grid; place-items: center; padding: 16px; }
+.modal-card { background: var(--panel); border-radius: 14px; box-shadow: var(--shadow); padding: 18px; width: min(460px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; }
+.modal-card h2 { margin: 0; font-size: 1.2rem; }
+.modal-card h3 { margin: 14px 0 6px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.custody-head { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; }
+.mugshot { font-size: 2.2rem; width: 56px; height: 56px; display: grid; place-items: center; background: #e9dfca; border-radius: 10px; }
+.verdicts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.verdicts .btn { flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
+.verdicts .btn.btn-danger .small { color: #b4434a; }

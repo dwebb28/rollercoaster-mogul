@@ -23,6 +23,8 @@
       <button data-speed="4" title="Fastest (3)">▶▶▶</button>
     </div>
     <div class="spacer"></div>
+    <button id="custody-btn" class="btn btn-small btn-alert" hidden></button>
+    <button id="lock-btn" class="btn btn-small btn-ghost" hidden></button>
     <span id="save-status" class="muted small"></span>
     <button id="save-btn" class="btn btn-small">Save</button>
     <div class="user">
@@ -43,6 +45,7 @@
     <button data-palette="security" title="Security (G)">🛡️<span>Security</span></button>
     <button data-tool="bulldoze" title="Bulldoze (B)">🚜<span>Bulldoze</span></button>
     <button data-panel="staff" title="Staff">🧹<span>Staff</span></button>
+    <button data-panel="wanted" title="Wanted list & gangs">🚨<span>Wanted</span></button>
     <button data-panel="park" title="Park & finances">📊<span>Park</span></button>
     <button data-panel="leaderboard" title="Leaderboard">🏆<span>Ranks</span></button>
   </nav>
@@ -54,6 +57,9 @@
   </aside>
   <div id="thoughts" class="thoughts" aria-live="polite"></div>
   <div id="raid-banner" class="raid-banner" hidden></div>
+  <div id="custody-modal" class="modal" hidden role="dialog" aria-modal="true" aria-label="Sentencing">
+    <div id="custody-card" class="modal-card"></div>
+  </div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <div id="hint" class="hint">Right-drag or arrow keys to pan · scroll to zoom</div>
 

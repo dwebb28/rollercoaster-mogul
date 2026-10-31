@@ -24,6 +24,15 @@ A browser-based theme park management game. Sign in with Google or GitHub, lay o
   - If you capture the whole crew, use the **Retribution Rig** to stage a public execution. A catapult hurls the prisoners at full speed into a fire pit, or into a dunk tank where they drown. Spectators pay to watch, every guest gets a big happiness boost, and Safety is fully restored.
 
   You can tune all of this in `PANDEMONIUM` in `public/js/catalog.js`.
+- **Suspects and sentencing:** every criminal keeps a record: thefts, assaults, robberies, drug deals, killings, money stolen and gang. Click an identified suspect to see their record, or open the 🚨 **Wanted** list to see every known suspect at large and gang activity. Everyone apprehended, pandas included, goes into custody, and you're asked to:
+  - **Release** them, which costs some Safety.
+  - **Fine** them. The fine grows with their record, and they're banned from the park.
+  - **Execute** them on the Retribution Rig by fire pit or drowning.
+- **Drugs and gangs:** about 4% of visitors are drug dealers, and about 1 in 5 food and drink vendors secretly deals under the counter.
+  - Guests who buy get high. They wander in a daze and can't find the exit.
+  - When the high wears off, about 30% join a crime gang and start committing crimes themselves.
+  - Guards and cameras can expose a corrupt vendor. You can replace the vendor from the shop's panel.
+- **Barbed wire perimeter:** costs $15,000 plus upkeep. Once it's up you can lock the exits at any time. Nobody gets in or out, criminals and Pandemonium included, but trapped guests get angry and your rating drops.
 - **Economy:** you set the entrance fee and the price of every ride and shop. If prices are too high, guests refuse to pay. You pay staff wages and ride upkeep every day.
 - **Guests:** each guest has their own thrill tolerance, budget and needs. Click a guest to see what they're thinking.
 - **Goals and leaderboard:** complete milestones and rank by park value. Your park autosaves to your account.

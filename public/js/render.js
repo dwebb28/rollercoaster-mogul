@@ -88,6 +88,7 @@ export class Renderer {
     this.raid = !!park.raid;
     for (const f of (park._fx || []).splice(0)) this.addFx(f);
     this.drawGround(park);
+    if (park.fence) this.drawFence(park, false, t);
 
     const drawables = [];
     for (const o of park.objects) drawables.push({ d: o.x + o.w + o.y + o.h - 1, o });
@@ -110,6 +111,7 @@ export class Renderer {
       else this.drawEntrance(park);
     }
 
+    if (park.fence) this.drawFence(park, true, t);
     this.drawShots(dt);
     this.drawParticles(dt);
     this.drawOverlay(park, view);
@@ -232,6 +234,7 @@ export class Renderer {
       const top = c.y - (ride ? 30 + o.h * 18 : 52);
       if (o.broken) this.badge(c.x, top, '#e5484d', '!');
       else if (!o.open) this.badge(c.x, top, '#555', '×');
+      else if (o.exposed) this.badge(c.x, top, '#7b2cbf', '$');
     }
   }
 
@@ -593,6 +596,13 @@ export class Renderer {
       // Identified suspect: red marker overhead.
       ctx.fillStyle = '#e5484d';
       ctx.beginPath(); ctx.moveTo(s.x - 4, s.y - 30); ctx.lineTo(s.x + 4, s.y - 30); ctx.lineTo(s.x, s.y - 24); ctx.fill();
+    } else if (g.high > 0) {
+      // Dizzy swirl of colors.
+      for (let k = 0; k < 4; k++) {
+        const a = t * 5 + (k * Math.PI) / 2 + g.id;
+        ctx.fillStyle = ['#ff5dd8', '#5dffb0', '#ffe45d', '#5db8ff'][k];
+        ctx.beginPath(); ctx.arc(s.x + Math.cos(a) * 6, s.y - 26 + Math.sin(a) * 2.5, 1.8, 0, Math.PI * 2); ctx.fill();
+      }
     } else if (g.injured) {
       ctx.fillStyle = '#fff';
       ctx.fillRect(s.x - 4, s.y - 31, 8, 8);
@@ -616,6 +626,68 @@ export class Renderer {
       ctx.fillRect(q.x + 3, q.y - 15, 3, 3);
       ctx.fillStyle = '#b5532b';
       ctx.beginPath(); ctx.ellipse(q.x + 12, q.y - 10.5, 2.5, 1.5, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  /**
+   * Barbed wire around the park edge. Back edges are drawn under everything,
+   * front edges over it. A locked entrance gets a barred gate.
+   */
+  drawFence(park, front, t) {
+    const { ctx } = this;
+    const H = 18;
+    const edges = front
+      ? [[(i) => [i, GRID], GRID], [(i) => [GRID, i], GRID]]
+      : [[(i) => [i, 0], GRID], [(i) => [0, i], GRID]];
+    for (const [at, n] of edges) {
+      for (let i = 0; i < n; i++) {
+        const [x0, y0] = at(i), [x1, y1] = at(i + 1);
+        if (front && y0 === GRID && i === ENTRANCE.x) { this.drawGate(park.locked, t); continue; }
+        const a = P(x0, y0), b = P(x1, y1);
+        ctx.strokeStyle = '#4a4a4a'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x, a.y - H); ctx.stroke();
+        ctx.strokeStyle = '#9aa0a6'; ctx.lineWidth = 0.8;
+        for (const h of [6, 12, H]) {
+          ctx.beginPath(); ctx.moveTo(a.x, a.y - h); ctx.lineTo(b.x, b.y - h); ctx.stroke();
+        }
+        // Razor coil along the top.
+        ctx.strokeStyle = '#c0c6cc';
+        ctx.beginPath();
+        for (let k = 0; k <= 6; k++) {
+          const v = k / 6;
+          const px = a.x + (b.x - a.x) * v, py = a.y + (b.y - a.y) * v - H - 3;
+          ctx.moveTo(px - 2, py - 2); ctx.lineTo(px + 2, py + 2);
+          ctx.moveTo(px + 2, py - 2); ctx.lineTo(px - 2, py + 2);
+        }
+        ctx.stroke();
+      }
+    }
+  }
+
+  drawGate(locked, t) {
+    const { ctx } = this;
+    const a = P(ENTRANCE.x, GRID), b = P(ENTRANCE.x + 1, GRID);
+    if (!locked) {
+      ctx.strokeStyle = '#4a4a4a'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x, a.y - 22); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x, b.y - 22); ctx.stroke();
+      return;
+    }
+    ctx.strokeStyle = '#2b2b2b'; ctx.lineWidth = 2.5;
+    for (let k = 0; k <= 6; k++) {
+      const v = k / 6;
+      const x = a.x + (b.x - a.x) * v, y = a.y + (b.y - a.y) * v;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - 24); ctx.stroke();
+    }
+    ctx.strokeStyle = '#b42318'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y - 12); ctx.lineTo(b.x, b.y - 12); ctx.stroke();
+    const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 14 };
+    ctx.fillStyle = '#ffd23f';
+    ctx.fillRect(m.x - 4, m.y, 8, 7);
+    ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(m.x, m.y, 3, Math.PI, 0); ctx.stroke();
+    if (Math.floor(t * 3) % 2) {
+      ctx.fillStyle = 'rgba(255, 40, 40, 0.35)';
+      ctx.beginPath(); ctx.arc(m.x, m.y, 14, 0, Math.PI * 2); ctx.fill();
     }
   }
 

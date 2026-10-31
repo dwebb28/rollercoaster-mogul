@@ -55,12 +55,15 @@ export function createPark(name = 'New Park', seed = Date.now()) {
     objects: [],
     guests: [],
     staff: [],
-    stats: { totalGuests: 0, peakGuests: 0, arrests: 0, crimes: 0, today: newLedger(), history: [] },
+    stats: { totalGuests: 0, peakGuests: 0, arrests: 0, crimes: 0, drugDeals: 0, gangRecruits: 0, today: newLedger(), history: [] },
     thoughts: [],
     incidents: [],
     objectives: [],
     raid: null,
     captives: [],
+    custody: [],
+    fence: false,
+    locked: false,
     pandemonium: newPandaStats(),
   };
   park.tiles[idx(ENTRANCE.x, ENTRANCE.y)] = TILE.ENTRANCE;
@@ -79,12 +82,21 @@ export function createPark(name = 'New Park', seed = Date.now()) {
   return park;
 }
 
+const RECORD_KEYS = ['theft', 'assault', 'robbery', 'drugs', 'homicide', 'stolen'];
+const newRecord = () => Object.fromEntries(RECORD_KEYS.map((k) => [k, 0]));
+function cleanRecord(r) {
+  const out = newRecord();
+  if (r && typeof r === 'object') for (const k of RECORD_KEYS) out[k] = num(r[k], 0, 1e9);
+  return out;
+}
+export const offences = (r) => r.theft + r.assault + r.robbery + r.drugs + r.homicide;
+
 function newPandaStats() {
   return { raids: 0, defeated: 0, escaped: 0, captured: 0, executions: 0, nextRaidDay: PANDEMONIUM.firstRaidDay };
 }
 
 function newLedger() {
-  return { income: 0, expenses: 0, admissions: 0, rides: 0, shops: 0, wages: 0, upkeep: 0, construction: 0, crime: 0, shows: 0, crimeCount: 0 };
+  return { income: 0, expenses: 0, admissions: 0, rides: 0, shops: 0, wages: 0, upkeep: 0, construction: 0, crime: 0, shows: 0, fines: 0, crimeCount: 0 };
 }
 
 /** Rebuilds transient lookup tables (anything prefixed with `_`). */
@@ -187,6 +199,7 @@ export function deserialize(data) {
       broken: o.broken === true,
       stats: { riders: num(o.stats?.riders, 0, 1e9), revenue: num(o.stats?.revenue, 0, 1e10) },
       ...(o.kind === 'retribution' ? { pit: o.pit === 'water' ? 'water' : 'fire', show: null } : {}),
+      ...(STALLS[o.kind] ? { corrupt: o.corrupt === true, exposed: o.corrupt === true && o.exposed === true, deals: num(o.deals, 0, 1e6) } : {}),
     }));
   }
   for (const g of data.guests) {
@@ -204,6 +217,9 @@ export function deserialize(data) {
       crime: CRIME.types[g.crime] || g.crime === 'panda' ? g.crime : null,
       hp: num(g.hp, 0, PANDEMONIUM.hp, PANDEMONIUM.hp),
       crimeT: num(g.crimeT, 0, 1e4, 20),
+      record: cleanRecord(g.record),
+      gang: CRIME.gangs.includes(g.gang) ? g.gang : null,
+      high: num(g.high, 0, 1000, 0),
       crimes: num(g.crimes, 0, 100),
       loot: num(g.loot, 0, 1e7),
       heistLoot: g.heistLoot === true,
@@ -243,7 +259,7 @@ export function deserialize(data) {
   }
   if (Array.isArray(data.incidents)) {
     park.incidents = data.incidents.slice(0, 30).map((t) => ({
-      type: ['theft', 'assault', 'heist', 'homicide', 'arrest', 'raid', 'execution'].includes(t?.type) ? t.type : 'theft',
+      type: ['theft', 'assault', 'heist', 'homicide', 'arrest', 'raid', 'execution', 'drugs', 'gang', 'sentence'].includes(t?.type) ? t.type : 'theft',
       text: String(t?.text ?? '').slice(0, 160), day: num(t?.day, 0, 1e7),
     }));
   }
@@ -251,6 +267,18 @@ export function deserialize(data) {
     park.captives = data.captives.slice(0, 50).map((c) => ({ name: String(c?.name ?? 'Panda').slice(0, 30) }));
   }
   park.captives.push(...pendingCaptives.map((name) => ({ name })));
+  if (Array.isArray(data.custody)) {
+    park.custody = data.custody.slice(0, 100).filter((c) => Number.isInteger(c?.id)).map((c) => ({
+      id: c.id, name: String(c.name ?? 'Suspect').slice(0, 30),
+      kind: CRIME.types[c.kind] || c.kind === 'panda' ? c.kind : 'pickpocket',
+      gang: CRIME.gangs.includes(c.gang) ? c.gang : null,
+      record: cleanRecord(c.record), by: String(c.by ?? '').slice(0, 60), day: num(c.day, 0, 1e7),
+    }));
+  }
+  park.fence = data.fence === true;
+  park.locked = park.fence && data.locked === true;
+  park.stats.drugDeals = num(data.stats?.drugDeals, 0, 1e9);
+  park.stats.gangRecruits = num(data.stats?.gangRecruits, 0, 1e9);
   const pd = data.pandemonium || {};
   for (const k of Object.keys(park.pandemonium)) park.pandemonium[k] = num(pd[k], 0, 1e7, park.pandemonium[k]);
   if (data.raid && typeof data.raid === 'object' && park.guests.some((g) => g.crime === 'panda')) {
@@ -273,8 +301,8 @@ export function deserialize(data) {
 function createEmpty() {
   return {
     version: 1, name: '', rngState: 1, time: 0, cash: 0, entranceFee: 10, open: true, rating: 500, safety: 100, nextId: 1,
-    tiles: [], litter: [], stains: [], objects: [], guests: [], staff: [], raid: null, captives: [], pandemonium: newPandaStats(),
-    stats: { totalGuests: 0, peakGuests: 0, arrests: 0, crimes: 0, today: newLedger(), history: [] },
+    tiles: [], litter: [], stains: [], objects: [], guests: [], staff: [], raid: null, captives: [], custody: [], fence: false, locked: false, pandemonium: newPandaStats(),
+    stats: { totalGuests: 0, peakGuests: 0, arrests: 0, crimes: 0, drugDeals: 0, gangRecruits: 0, today: newLedger(), history: [] },
     thoughts: [], incidents: [], objectives: [],
   };
 }
@@ -391,6 +419,9 @@ export function build(park, kind, x, y) {
   spend(park, def.cost, 'construction');
   const obj = addObject(park, kind, x, y, def.cost);
   const cat = itemCategory(kind);
+  if (STALLS[kind] && (STALLS[kind].sells === 'food' || STALLS[kind].sells === 'drink')) {
+    Object.assign(obj, { corrupt: rand(park) < CRIME.corruptVendorChance, exposed: false, deals: 0 });
+  }
   const warn = cat !== 'scenery' && obj._access.length === 0 ? 'Connect it to a path so guests can reach it.' : null;
   return { ok: true, obj, warn };
 }
@@ -572,7 +603,7 @@ export function step(park, dt) {
 }
 
 function spawnGuests(park, dt) {
-  if (!park.open) return;
+  if (!park.open || park.locked) return;
   const s = parkStats(park);
   const attraction = 0.06 + s.rides * 0.07 + s.stalls * 0.01 + s.excitement * 0.012;
   const ratingF = 0.4 + (park.rating / 1000) * 1.2;
@@ -592,6 +623,7 @@ function newGuestStats() {
     state: 'walk', target: null, route: null, busy: 0, queueT: 0, queueAt: -1,
     thought: '', thoughtT: 0, litterT: 0, decideIn: 0, ridden: {}, rides: 0, gone: false, leaving: false,
     crime: null, crimeT: 0, crimes: 0, loot: 0, heistLoot: false, heist: null, spotted: false, injured: false,
+    record: newRecord(), gang: null, high: 0,
   };
 }
 
@@ -617,13 +649,18 @@ function spawnGuest(park) {
   };
   if (!walkable(park, idx(g.nx, g.ny))) return;
   const crimeRate = CRIME.baseRate + (park.rating < 400 ? CRIME.lowRatingRate : 0);
-  if (rand(park) < crimeRate) {
+  if (rand(park) < CRIME.dealerRate) {
+    g.crime = 'dealer';
+    g.crimeT = 10 + rand(park) * 20;
+    g.gang = pick(park, CRIME.gangs);
+  } else if (rand(park) < crimeRate) {
     let r = rand(park);
     for (const [type, share] of Object.entries(CRIME.types)) {
       g.crime = type;
       if ((r -= share) < 0) break;
     }
     g.crimeT = 15 + rand(park) * 30;
+    if (g.crime === 'dealer' || rand(park) < CRIME.gangChance) g.gang = pick(park, CRIME.gangs);
   }
   if (park.entranceFee) earn(park, park.entranceFee, 'admissions');
   park.guests.push(g);
@@ -688,6 +725,16 @@ function updateGuest(park, g, dt) {
   }
 
   if (g.heist && !g.target) { g.heist = null; g.crimeT = 10; } // heist target became unreachable
+  if (g.high > 0) {
+    g.high -= dt;
+    g.energy = Math.min(100, g.energy + 0.1 * dt);
+    if (rand(park) < 0.004) think(park, g, pick(park, ['Whoa... the colors...', 'Which way is the exit again?', 'I can hear the rides breathing.', 'Best. Park. EVER.']));
+    if (g.high <= 0) comeDown(park, g);
+  }
+  if (park.locked && g.leaving && !g.crime) {
+    g.happy = Math.max(0, g.happy - 0.6 * dt);
+    if (rand(park) < 0.01) think(park, g, 'The exits are locked! Let us out!');
+  }
   if (g.crime && !g.leaving && g.state === 'walk') {
     g.crimeT -= dt;
     if (g.crimeT <= 0) planCrime(park, g);
@@ -770,7 +817,7 @@ function walkGuest(park, g, dt) {
 }
 
 function onArrive(park, g, here) {
-  if (park.tiles[here] === TILE.ENTRANCE && g.leaving) {
+  if (park.tiles[here] === TILE.ENTRANCE && g.leaving && !park.locked && g.high <= 0) {
     if (g.crime && g.spotted && rand(park) < CRIME.gateArrestChance) arrest(park, g, 'park security at the gate');
     g.gone = true;
     return;
@@ -804,6 +851,13 @@ function onArrive(park, g, here) {
 }
 
 function decide(park, g, here) {
+  if (g.leaving && (g.high > 0 || park.locked)) {
+    // Too high to find the exit, or the exits are sealed: wander.
+    g.route = null;
+    if (g.high > 0 && rand(park) < 0.05) think(park, g, "I can't find the exit... where am I?");
+    advance(park, g);
+    return;
+  }
   if (g.leaving) {
     if (!g.route) {
       const { prev } = bfs(park, here, true);
@@ -931,6 +985,7 @@ function interact(park, g, obj, here) {
     obj.stats.riders++;
     g.state = 'busy';
     g.busy = 2;
+    if (obj.corrupt && !g.crime && g.high <= 0 && rand(park) < CRIME.corruptOfferChance) vendorDeal(park, g, obj);
     if (stall.sells === 'food') { g.hunger = 0; g.happy = Math.min(100, g.happy + 5); g.litterT = 4 + rand(park) * 10; }
     if (stall.sells === 'drink') { g.thirst = 0; g.bladder += 20; g.happy = Math.min(100, g.happy + 4); g.litterT = 4 + rand(park) * 10; }
     if (stall.sells === 'restroom') { g.bladder = 0; g.busy = 4; g.happy = Math.min(100, g.happy + 4); }
@@ -1072,7 +1127,7 @@ function updateRating(park) {
   const happy = s.guests ? s.avgHappy : 60;
   const target = 120 + happy * 4 + Math.min(s.rides, 10) * 28 + Math.min(s.beauty, 120)
     - s.litter * 4 - s.broken * 60 - (s.stalls === 0 && s.guests > 10 ? 80 : 0)
-    - (100 - park.safety) * 3 - s.stains * 6;
+    - (100 - park.safety) * 3 - s.stains * 6 - (park.locked ? CRIME.lockedRatingPenalty : 0);
   park.rating += (clamp(target, 0, 999) - park.rating) * 0.08;
 }
 
@@ -1093,6 +1148,7 @@ function endDay(park, finishedDay) {
     const def = RIDES[o.kind] || STALLS[o.kind] || SPECIAL[o.kind];
     if (def && o.open !== false) spend(park, def.upkeep, 'upkeep');
   }
+  if (park.fence) spend(park, CRIME.fenceUpkeep, 'upkeep');
   const t = park.stats.today;
   park.stats.history.push({ day: finishedDay, income: Math.round(t.income), expenses: Math.round(t.expenses), guests: park.guests.length, crimes: t.crimeCount });
   if (park.stats.history.length > 30) park.stats.history.shift();
@@ -1176,7 +1232,8 @@ function planCrime(park, g) {
 
   const victim = victimNear(park, g);
   if (!victim) { g.crimeT = 3 + rand(park) * 4; return; }
-  if (g.crime === 'pickpocket') commitTheft(park, g, victim, cov);
+  if (g.crime === 'dealer') commitDeal(park, g, victim, cov);
+  else if (g.crime === 'pickpocket') commitTheft(park, g, victim, cov);
   else commitAssault(park, g, victim, cov);
 }
 
@@ -1185,6 +1242,8 @@ function commitTheft(park, g, v, cov) {
   if (amount <= 0) { g.crimeT = 4; return; }
   v.cash -= amount;
   g.loot += amount;
+  g.record.theft++;
+  g.record.stolen += amount;
   v.happy = Math.max(0, v.happy - 20);
   think(park, v, 'Someone stole my wallet!', true);
   logIncident(park, 'theft', `${v.name} was pickpocketed ($${amount}).`);
@@ -1195,6 +1254,7 @@ function commitAssault(park, g, v, cov) {
   const firstAid = park.objects.some((o) => o.kind === 'firstaid' && o.open);
   const fatal = rand(park) < CRIME.homicideChance * (firstAid ? CRIME.firstAidHomicideFactor : 1);
   bleed(park, v, fatal ? 3 : 1);
+  g.record[fatal ? 'homicide' : 'assault']++;
   if (fatal) {
     v.gone = true;
     spend(park, CRIME.homicideLegalCost, 'crime');
@@ -1224,6 +1284,8 @@ function commitHeist(park, g, obj) {
   spend(park, taken, 'crime');
   g.loot += taken;
   g.heistLoot = true;
+  g.record.robbery++;
+  g.record.stolen += taken;
   logIncident(park, 'heist', `Heist at ${name}: $${taken.toLocaleString()} stolen.`);
   park._events.push({ type: 'warn', text: `Heist at ${name}! $${taken.toLocaleString()} stolen.` });
   afterCrime(park, g, coverage(park, g.x, g.y), true);
@@ -1239,7 +1301,7 @@ function afterCrime(park, g, cov, flee) {
     cov.guard.chase = g.id;
     cov.guard.route = null;
   }
-  if (flee || g.crimes >= 3) startLeaving(park, g);
+  if (flee || g.crimes >= (g.crime === 'dealer' ? 8 : 3)) startLeaving(park, g);
 }
 
 function arrest(park, g, by) {
@@ -1251,10 +1313,11 @@ function arrest(park, g, by) {
   park.stats.arrests++;
   park.safety = Math.min(100, park.safety + 2);
   if (g.heistLoot && g.loot) earn(park, g.loot, 'crime');
-  const what = { pickpocket: 'pickpocket', brawler: 'violent offender', robber: 'robber' }[g.crime];
+  const what = CRIME_LABEL[g.crime];
   const recovered = g.heistLoot && g.loot ? ` $${Math.round(g.loot).toLocaleString()} recovered.` : '';
   logIncident(park, 'arrest', `${g.name}, a ${what}, was arrested by ${by}.${recovered}`);
   park._events.push({ type: 'goal', text: `${g.name} (${what}) arrested!${recovered}` });
+  takeIntoCustody(park, g, by);
   for (const s of park.staff) if (s.chase === g.id) s.chase = null;
 }
 
@@ -1348,7 +1411,8 @@ function updatePanda(park, g, dt) {
     return;
   }
   if (!park.raid) { g.gone = true; return; }
-  if (!g.leaving && park.time - park.raid.startedAt > PANDEMONIUM.raidSeconds) {
+  if (g.leaving && park.locked) { g.leaving = false; g.route = null; think(park, g, "They've locked us in!"); }
+  if (!g.leaving && !park.locked && park.time - park.raid.startedAt > PANDEMONIUM.raidSeconds) {
     startLeaving(park, g, 'Grab the loot and scatter!');
   }
   g.crimeT -= dt;
@@ -1386,6 +1450,7 @@ function updatePanda(park, g, dt) {
       v.happy = Math.max(0, v.happy - 45);
       think(park, v, `A panda just beat me up!`, true);
       bleed(park, v, 1);
+      g.record.assault++;
       logIncident(park, 'assault', `${g.name} of Pandemonium assaulted ${v.name}.`);
     }
   }
@@ -1408,6 +1473,8 @@ function robTill(park, g, obj) {
     spend(park, taken, 'crime');
     g.loot += taken;
     park.raid.loot += taken;
+    g.record.robbery++;
+    g.record.stolen += taken;
   }
   const smashed = rand(park) < PANDEMONIUM.sabotageChance && 'broken' in obj;
   if (smashed) {
@@ -1431,7 +1498,7 @@ function pandaEscapes(park, g) {
 
 function capturePanda(park, g) {
   g.gone = true;
-  park.captives.push({ name: g.name });
+  takeIntoCustody(park, g, 'the Hot Dog Squad');
   park.pandemonium.captured++;
   park.stats.arrests++;
   if (park.raid) park.raid.captured++;
@@ -1450,7 +1517,7 @@ function checkRaidOver(park) {
     pd.nextRaidDay = day(park) + PANDEMONIUM.cooldownDays + 2;
     park.safety = Math.min(100, park.safety + PANDEMONIUM.defeatSafetyBonus);
     logIncident(park, 'raid', `Pandemonium was defeated! ${raid.captured} members in custody.`);
-    park._events.push({ type: 'goal', text: `Pandemonium defeated! ${park.captives.length} prisoners await justice at the Retribution Rig.` });
+    park._events.push({ type: 'goal', text: `Pandemonium defeated! ${raid.captured} members in custody await sentencing.` });
   } else {
     pd.nextRaidDay = day(park) + PANDEMONIUM.cooldownDays;
     logIncident(park, 'raid', `Pandemonium got away with $${Math.round(raid.loot).toLocaleString()}. ${raid.captured} captured, ${raid.escaped} escaped.`);
@@ -1506,7 +1573,7 @@ export function execute(park, id, mode) {
   const rig = getObject(park, id);
   if (!rig || rig.kind !== 'retribution') return { ok: false, reason: 'That is not a Retribution Rig.' };
   if (rig.show) return { ok: false, reason: 'A show is already underway.' };
-  if (!park.captives.length) return { ok: false, reason: 'No Pandemonium prisoners in custody.' };
+  if (!park.captives.length) return { ok: false, reason: 'Nobody is on death row.' };
   if (!rig._access.length) return { ok: false, reason: 'Connect the rig to a path so a crowd can gather.' };
   rig.pit = mode === 'water' ? 'water' : 'fire';
   const victims = park.captives.splice(0).map((c) => c.name);
@@ -1518,7 +1585,7 @@ export function execute(park, id, mode) {
   }
   const how = rig.pit === 'fire' ? 'launched into the fire pit' : 'drowned in the dunk tank';
   logIncident(park, 'execution', `${victims.join(', ')} ${victims.length > 1 ? 'were' : 'was'} ${how}.`);
-  park._events.push({ type: 'raid', text: `⚖️ Public execution at the Retribution Rig! ${victims.length} Pandemonium member${victims.length > 1 ? 's' : ''} to be ${how}.` });
+  park._events.push({ type: 'raid', text: `⚖️ Public execution at the Retribution Rig! ${victims.length > 1 ? `${victims.length} prisoners` : victims[0]} to be ${how}.` });
   return { ok: true };
 }
 
@@ -1558,6 +1625,154 @@ function updateShow(park, rig, dt) {
   park.safety = 100;
   park._events.push({ type: 'goal', text: `Justice served. ${show.spectators} spectators cheered. Pandemonium will think twice.` });
   park.pandemonium.nextRaidDay = Math.max(park.pandemonium.nextRaidDay, day(park) + PANDEMONIUM.cooldownDays + 1);
+  if (park.captives.length) execute(park, rig.id, rig.pit); // more on death row: next show
+}
+
+// ---------------------------------------------------------------------------
+// Drugs & gangs
+// ---------------------------------------------------------------------------
+
+export const CRIME_LABEL = {
+  pickpocket: 'pickpocket', brawler: 'violent offender', robber: 'robber', dealer: 'drug dealer', panda: 'Pandemonium raider',
+};
+
+function getHigh(park, v) {
+  v.high = randIn(park, CRIME.highSeconds);
+  v.happy = Math.min(100, v.happy + 10);
+  park.stats.drugDeals++;
+  think(park, v, 'Whoa... everything is so colorful.', true);
+}
+
+function commitDeal(park, g, v, cov) {
+  if (v.high > 0 || v.cash < CRIME.dealPrice[0]) { g.crimeT = 4; return; }
+  const accept = CRIME.dealAcceptBase + (100 - v.happy) / 200;
+  if (rand(park) >= accept) {
+    v.happy = Math.max(0, v.happy - 3);
+    think(park, v, 'Some shady character just tried to sell me drugs.');
+    g.crimeT = 6 + rand(park) * 6;
+    return;
+  }
+  const price = Math.min(v.cash, Math.round(randIn(park, CRIME.dealPrice)));
+  v.cash -= price;
+  g.loot += price;
+  g.record.drugs++;
+  getHigh(park, v);
+  logIncident(park, 'drugs', `${g.name}${g.gang ? ` (${g.gang})` : ''} sold drugs to ${v.name}.`);
+  afterCrime(park, g, cov, false);
+}
+
+function vendorDeal(park, g, obj) {
+  const def = STALLS[obj.kind];
+  const accept = CRIME.dealAcceptBase + (100 - g.happy) / 200;
+  if (rand(park) >= accept) { think(park, g, `The ${def.name} vendor offered me something... not on the menu.`); return; }
+  const price = Math.min(g.cash, Math.round(randIn(park, CRIME.dealPrice)));
+  g.cash -= price;
+  obj.deals++;
+  getHigh(park, g);
+  logIncident(park, 'drugs', `Drugs were sold under the counter at ${def.name}.`);
+  const cov = coverage(park, obj.x, obj.y);
+  const watched = (cov.guard && cov.guardD <= CRIME.guardChaseRadius) || cov.camera;
+  if (!obj.exposed && watched && rand(park) < CRIME.corruptExposeChance) {
+    obj.exposed = true;
+    park._events.push({ type: 'warn', text: `💊 Security caught the ${def.name} vendor dealing drugs! Replace the vendor.` });
+  }
+}
+
+/** Replaces a stall's vendor, ending any under-the-counter dealing. */
+export function replaceVendor(park, id) {
+  const obj = getObject(park, id);
+  if (!obj || !('corrupt' in obj)) return { ok: false, reason: 'No vendor to replace.' };
+  spend(park, CRIME.replaceVendorCost, 'wages');
+  const was = obj.corrupt;
+  Object.assign(obj, { corrupt: false, exposed: false });
+  return { ok: true, wasCorrupt: was };
+}
+
+function comeDown(park, g) {
+  g.high = 0;
+  if (g.crime || rand(park) >= CRIME.gangRecruitChance) {
+    think(park, g, 'Ugh. What happened? Where am I?');
+    return;
+  }
+  g.crime = pick(park, ['pickpocket', 'brawler', 'dealer']);
+  g.gang = pick(park, CRIME.gangs);
+  g.crimeT = 10 + rand(park) * 15;
+  g.leaving = false;
+  park.stats.gangRecruits++;
+  think(park, g, `I run with ${g.gang} now.`);
+  logIncident(park, 'gang', `${g.name} joined ${g.gang}.`);
+}
+
+// ---------------------------------------------------------------------------
+// Custody & sentencing
+// ---------------------------------------------------------------------------
+
+export const knownSuspects = (park) => park.guests.filter((g) => g.crime && !g.gone && (g.spotted || g.crime === 'panda'));
+
+function takeIntoCustody(park, g, by) {
+  park.custody.push({
+    id: g.id, name: g.name, kind: g.crime, gang: g.gang, record: { ...g.record }, by, day: day(park),
+  });
+  park._events.push({ type: 'custody', text: `${g.name} is in custody awaiting your decision.` });
+}
+
+export function fineFor(c) {
+  if (c.kind === 'panda') return CRIME.pandaFine;
+  return Math.round(CRIME.fineBase + offences(c.record) * CRIME.finePerOffence + c.record.stolen * CRIME.fineStolenMultiplier);
+}
+
+/**
+ * Decides the fate of someone in custody.
+ * verdict: 'release' | 'fine' | 'execute' (mode: 'fire' | 'water').
+ */
+export function sentence(park, id, verdict, mode = 'fire') {
+  const i = park.custody.findIndex((c) => c.id === id);
+  if (i < 0) return { ok: false, reason: 'Nobody by that ID is in custody.' };
+  const c = park.custody[i];
+  const rig = park.objects.find((o) => o.kind === 'retribution');
+  if (verdict === 'execute' && !rig) return { ok: false, reason: 'Build a Retribution Rig first.' };
+  park.custody.splice(i, 1);
+  if (verdict === 'release') {
+    park.safety = Math.max(0, park.safety - CRIME.releaseSafetyHit);
+    logIncident(park, 'sentence', `${c.name} was released without charge.`);
+    return { ok: true };
+  }
+  if (verdict === 'fine') {
+    const fine = fineFor(c);
+    earn(park, fine, 'fines');
+    logIncident(park, 'sentence', `${c.name} was fined $${fine.toLocaleString()} and banned from the park.`);
+    return { ok: true, fine };
+  }
+  park.captives.push({ name: c.name });
+  if (!rig.show) {
+    const res = execute(park, rig.id, mode);
+    if (!res.ok) return { ok: true, queued: true, reason: res.reason };
+    return { ok: true };
+  }
+  return { ok: true, queued: true };
+}
+
+// ---------------------------------------------------------------------------
+// Barbed wire perimeter
+// ---------------------------------------------------------------------------
+
+export function installFence(park) {
+  if (park.fence) return { ok: false, reason: 'The fence is already installed.' };
+  if (park.cash < CRIME.fenceCost) return { ok: false, reason: 'Not enough cash', cash: true };
+  spend(park, CRIME.fenceCost, 'construction');
+  park.fence = true;
+  park._events.push({ type: 'info', text: 'Barbed wire fencing installed around the park. You can now lock the exits.' });
+  return { ok: true };
+}
+
+export function setLocked(park, locked) {
+  if (!park.fence) return { ok: false, reason: 'Install barbed wire fencing first.' };
+  park.locked = !!locked;
+  for (const a of [...park.guests, ...park.staff]) a.route = null;
+  park._events.push(park.locked
+    ? { type: 'raid', text: '🔒 LOCKDOWN: the exits are sealed. Nobody gets in or out.' }
+    : { type: 'info', text: '🔓 Lockdown lifted. The gates are open.' });
+  return { ok: true };
 }
 
 /** Removes and returns pending UI notifications produced by the sim. */

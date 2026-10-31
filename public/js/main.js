@@ -1,5 +1,5 @@
 import { api, money, el } from './api.js';
-import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, PANDEMONIUM, OBJECTIVES, PATH_COST, GRID, itemDef, itemCategory } from './catalog.js';
+import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, PANDEMONIUM, CRIME, OBJECTIVES, PATH_COST, GRID, itemDef, itemCategory } from './catalog.js';
 import * as Sim from './sim.js';
 import { Renderer } from './render.js';
 
@@ -133,6 +133,10 @@ function updateHud() {
 
   const feed = $('thoughts');
   const pandas = park.raid ? Sim.activePandas(park).filter((g) => g.state !== 'downed').length : 0;
+  updateCustody();
+  $('lock-btn').hidden = !park.fence;
+  $('lock-btn').textContent = park.locked ? '🔒 Locked' : '🔓 Exits open';
+  $('lock-btn').classList.toggle('locked', park.locked);
   $('raid-banner').hidden = !park.raid;
   if (park.raid) $('raid-banner').textContent = `🐼 PANDEMONIUM RAID: ${pandas} at large · $${Math.round(park.raid.loot).toLocaleString()} stolen · ${park.raid.captured} captured`;
   const key = park.thoughts.slice(0, 4).map((t) => t.text + t.who).join('|');
@@ -307,7 +311,96 @@ function hireStaff(role) {
   refreshPanel(true);
 }
 
+function recordView(r, loot = 0) {
+  return el('div', {},
+    el('h3', {}, 'Criminal record'),
+    kv([
+      ['Thefts', r.theft],
+      ['Assaults', r.assault],
+      ['Robberies', r.robbery],
+      ['Drug deals', r.drugs],
+      ['Killings', r.homicide],
+      ['Total stolen', money(r.stolen)],
+      loot > 0 && ['Loot on them', money(loot)],
+    ]));
+}
+
+// ---------------------------------------------------------------------------
+// Custody: sentencing prompt
+// ---------------------------------------------------------------------------
+
+let custodySeen = 0;
+let custodyKey = '';
+function updateCustody() {
+  const { park } = state;
+  const n = park.custody.length;
+  $('custody-btn').hidden = n === 0;
+  $('custody-btn').textContent = `⚖️ ${n} in custody`;
+  if (n > custodySeen && $('custody-modal').hidden) $('custody-modal').hidden = false;
+  custodySeen = n;
+  if (!n) { $('custody-modal').hidden = true; return; }
+  if ($('custody-modal').hidden) return;
+  const c = park.custody[0];
+  const rig = park.objects.find((o) => o.kind === 'retribution');
+  const key = `${c.id}|${n}|${!!rig}|${rig?.show ? 1 : 0}`;
+  if (key === custodyKey) return;
+  custodyKey = key;
+  const decide = (verdict, mode) => {
+    const res = Sim.sentence(park, c.id, verdict, mode);
+    if (!res.ok) { toast(res.reason, 'warn'); return; }
+    if (verdict === 'fine') toast(`${c.name} paid a ${money(res.fine)} fine.`);
+    if (verdict === 'release') toast(`${c.name} was released.`);
+    if (verdict === 'execute' && res.queued) toast(`${c.name} is on death row until the Retribution Rig is free.`);
+    state.dirty = true;
+    custodyKey = '';
+    updateCustody();
+  };
+  $('custody-card').replaceChildren(...[
+    el('div', { class: 'custody-head' },
+      el('span', { class: 'mugshot' }, c.kind === 'panda' ? '🐼' : '🧑'),
+      el('div', {},
+        el('h2', {}, c.name),
+        el('p', { class: 'small muted' }, `${Sim.CRIME_LABEL[c.kind]}${c.gang ? ` · ${c.gang}` : ''} · apprehended by ${c.by} on day ${c.day}`)),
+      el('span', { class: 'small muted' }, `1 of ${n}`)),
+    recordView(c.record),
+    el('h3', {}, 'Your verdict'),
+    el('div', { class: 'verdicts' },
+      el('button', { class: 'btn', onclick: () => decide('release') }, el('b', {}, 'Release'), el('span', { class: 'small muted' }, `Safety −${CRIME.releaseSafetyHit}`)),
+      el('button', { class: 'btn', onclick: () => decide('fine') }, el('b', {}, `Fine ${money(Sim.fineFor(c))}`), el('span', { class: 'small muted' }, 'Then banned from the park')),
+      el('button', { class: 'btn btn-danger', disabled: !rig, onclick: () => decide('execute', 'fire') }, el('b', {}, '🔥 Execute: fire pit'), el('span', { class: 'small muted' }, 'Launched at full speed')),
+      el('button', { class: 'btn btn-danger', disabled: !rig, onclick: () => decide('execute', 'water') }, el('b', {}, '🌊 Execute: drown'), el('span', { class: 'small muted' }, 'Into the dunk tank'))),
+    !rig && el('p', { class: 'small muted' }, 'Build a Retribution Rig (🛡️ Security menu) to unlock executions.'),
+    el('div', { class: 'actions' }, el('button', { class: 'btn btn-link', onclick: () => { $('custody-modal').hidden = true; } }, 'Decide later')),
+  ].filter(Boolean));
+}
+
 const PANELS = {
+  wanted: () => {
+    const { park } = state;
+    const suspects = Sim.knownSuspects(park);
+    const gangs = {};
+    for (const g of park.guests) if (g.gang && !g.gone) gangs[g.gang] = (gangs[g.gang] || 0) + 1;
+    return el('div', {},
+      el('h2', {}, '🚨 Wanted list'),
+      el('p', { class: 'small muted' }, 'Suspects identified by guards and cameras who are still in the park. Guards arrest them on sight.'),
+      suspects.length
+        ? el('ul', { class: 'list' }, suspects.map((g) => el('li', {},
+          el('div', {},
+            el('div', {}, `${g.crime === 'panda' ? '🐼' : '🧑'} ${g.name}`),
+            el('div', { class: 'small muted' }, `${Sim.CRIME_LABEL[g.crime]}${g.gang ? ` · ${g.gang}` : ''} · ${Sim.offences(g.record)} offences · ${money(g.record.stolen)} stolen`)),
+          el('button', { class: 'btn btn-small', onclick: () => { renderer.centerOn(g.x, g.y); showPanel({ type: 'guest', id: g.id }); } }, 'Find'))))
+        : el('p', { class: 'small muted' }, 'No known suspects at large.'),
+      el('h3', {}, 'Known gang activity'),
+      kv([
+        ['Drug deals recorded', park.stats.drugDeals],
+        ['Guests recruited into gangs', park.stats.gangRecruits],
+        ['Guests currently high', park.guests.filter((g) => g.high > 0).length],
+        ...Object.entries(gangs).map(([name, n]) => [name, `${n} members suspected`]),
+      ]),
+      park.custody.length > 0 && el('div', { class: 'actions' },
+        el('button', { class: 'btn btn-primary', onclick: () => { $('custody-modal').hidden = false; custodyKey = ''; updateCustody(); } }, `Sentence ${park.custody.length} in custody`)));
+  },
+
   welcome: () => el('div', {},
     el('h2', {}, 'Welcome, Mogul!'),
     el('p', {}, `You've got ${money(state.park.cash)} and an empty field. Here's how to get started:`),
@@ -341,6 +434,7 @@ const PANELS = {
         ['Upkeep', `${money(def.upkeep)}/day`],
         o._access.length === 0 && ['Access', '⚠ Not connected to a path'],
       ]),
+      o.exposed && el('p', { class: 'error small' }, `💊 This vendor has been caught selling drugs under the counter (${o.deals} known deals). Replace them!`),
       !FREE.has(def.sells) && el('h3', {}, 'Price'),
       !FREE.has(def.sells) && stepper(`$${o.price.toFixed(o.price % 1 ? 2 : 0)}`,
         () => { Sim.setPrice(park, id, o.price - 0.5); state.dirty = true; refreshPanel(true); },
@@ -350,6 +444,14 @@ const PANELS = {
         : 'Guests balk at overpriced food and drinks.'),
       el('div', { class: 'actions' },
         el('button', { class: 'btn', onclick: () => { Sim.setOpen(park, id, !o.open); state.dirty = true; refreshPanel(true); } }, o.open ? 'Close' : 'Open'),
+        'corrupt' in o && el('button', {
+          class: `btn${o.exposed ? ' btn-primary' : ''}`,
+          onclick: () => {
+            const res = Sim.replaceVendor(park, id);
+            toast(res.wasCorrupt ? 'The new vendor is clean. The dealing has stopped.' : 'New vendor hired. (The old one was clean.)');
+            state.dirty = true; refreshPanel(true);
+          },
+        }, `Replace vendor (${money(CRIME.replaceVendorCost)})`),
         el('button', { class: 'btn btn-danger', onclick: () => demolish(o) }, `Demolish (+${money(o.paid * 0.5)})`)));
   },
 
@@ -385,8 +487,10 @@ const PANELS = {
     return el('div', {},
       el('h2', {}, `${mood} ${g.name}`),
       el('p', { class: 'muted small' }, doing),
-      g.crime && g.spotted && el('p', { class: 'error small' }, `⚠ Wanted: ${{ pickpocket: 'pickpocketing', brawler: 'assault', robber: 'robbery' }[g.crime]}`),
+      g.crime && g.spotted && el('p', { class: 'error small' }, `⚠ Wanted ${Sim.CRIME_LABEL[g.crime]}${g.gang ? ` · ${g.gang}` : ''}`),
       g.injured && el('p', { class: 'small' }, '🩹 Injured: looking for first aid'),
+      g.high > 0 && el('p', { class: 'small' }, `😵 High on drugs: ${g.leaving ? "can't find the exit" : 'wandering in a daze'} (${Math.ceil(g.high)}s left)`),
+      g.crime && g.spotted && recordView(g.record, g.loot),
       g.thought && el('div', { class: 'thought-bubble' }, `“${g.thought}”`),
       el('div', { class: 'need' }, 'Happiness', bar(g.happy, '#2f9e44')),
       el('div', { class: 'need' }, 'Energy', bar(g.energy, '#3e8ed0')),
@@ -425,7 +529,8 @@ const PANELS = {
         ['Squad officers', squad.length],
         ['Raid status', park.raid ? `ACTIVE: ${pandas.length} at large` : 'All quiet'],
         ['Pandemonium captured', park.pandemonium.captured],
-        ['Prisoners awaiting justice', park.captives.length],
+        ['In custody', park.custody.length],
+        ['On death row', park.captives.length],
       ]),
       el('div', { class: 'actions' },
         el('button', { class: 'btn btn-primary', onclick: () => hireStaff('squad') }, `Hire officer (${money(STAFF.squad.wage)}/day)`),
@@ -443,13 +548,13 @@ const PANELS = {
     }, label);
     return el('div', {},
       el('h2', {}, '⚖️ Retribution Rig'),
-      el('p', { class: 'muted small' }, 'A siege catapult that hurls captured Pandemonium members at full speed into a roaring fire pit or a dunk tank they never surface from. Crowds pay to watch.'),
+      el('p', { class: 'muted small' }, 'A siege catapult that hurls condemned prisoners at full speed into a roaring fire pit or a dunk tank they never surface from. Crowds pay to watch.'),
       el('h3', {}, 'Method'),
       el('div', { class: 'actions' }, mode('fire', '🔥 Fire pit'), mode('water', '🌊 Dunk tank')),
       el('h3', {}, `Prisoners (${park.captives.length})`),
       park.captives.length
         ? el('ul', { class: 'list' }, park.captives.map((c) => el('li', {}, `🐼 ${c.name}`)))
-        : el('p', { class: 'small muted' }, show ? 'Show in progress.' : 'No prisoners. Defeat a Pandemonium raid to capture some.'),
+        : el('p', { class: 'small muted' }, show ? 'Show in progress.' : 'Death row is empty. Sentence prisoners from custody to execution to fill it.'),
       show && kv([['Now', `${show.victims[Math.min(show.victims.length - 1, Math.floor(show.t / PANDEMONIUM.showSecondsPerVictim))]}`], ['Spectators', show.spectators]]),
       el('div', { class: 'actions' },
         el('button', {
@@ -532,6 +637,20 @@ const PANELS = {
           el('li', {}, el('span', {}, `${CRIME_ICON[i.type]} ${i.text}`), el('span', { class: 'muted small' }, `D${i.day}`))))
         : el('p', { class: 'small muted' }, 'No incidents reported.'),
       s.safety < 60 && el('p', { class: 'small' }, 'Tip: guards, cameras, lamp posts and a first aid post make the park safer.'),
+      el('h3', {}, 'Barbed wire perimeter'),
+      park.fence
+        ? el('div', {},
+          el('p', { class: 'small muted' }, `Installed (${money(CRIME.fenceUpkeep)}/day upkeep). Locking the exits stops everyone entering or leaving: criminals and Pandemonium can't escape, but trapped guests get angry and your rating suffers.`),
+          el('div', { class: 'actions' }, el('button', { class: `btn${park.locked ? ' btn-primary' : ' btn-danger'}`, onclick: toggleLock }, park.locked ? '🔓 Unlock the exits' : '🔒 Lock the exits')))
+        : el('div', {},
+          el('p', { class: 'small muted' }, 'Ring the park with razor wire so you can lock the exits at any time.'),
+          el('div', { class: 'actions' }, el('button', {
+            class: 'btn', onclick: () => {
+              const res = Sim.installFence(park);
+              if (!res.ok) toast(res.reason, 'warn');
+              state.dirty = true; refreshPanel(true);
+            },
+          }, `Install barbed wire (${money(CRIME.fenceCost)})`))),
       el('h3', {}, `Today (day ${Sim.day(park)})`),
       kv([
         ['Admissions', money(t.admissions)],
@@ -565,6 +684,13 @@ const PANELS = {
             el('td', { class: 'num' }, p.rating))))));
   },
 };
+
+function toggleLock() {
+  const res = Sim.setLocked(state.park, !state.park.locked);
+  if (!res.ok) toast(res.reason, 'warn');
+  state.dirty = true;
+  refreshPanel(true);
+}
 
 function demolish(o) {
   Sim.bulldoze(state.park, o.x, o.y);
@@ -726,11 +852,14 @@ function bindInput() {
       else if (b.dataset.panel === 'leaderboard') openLeaderboard();
       else if (b.dataset.panel === 'staff') showPanel({ type: 'staff_list' });
       else if (b.dataset.panel === 'park') showPanel({ type: 'park' });
+      else if (b.dataset.panel === 'wanted') showPanel({ type: 'wanted' });
     });
   }
   for (const b of document.querySelectorAll('.speed button')) b.addEventListener('click', () => setSpeed(Number(b.dataset.speed)));
   $('park-name').addEventListener('click', () => showPanel({ type: 'park' }));
   document.querySelector('.panel-close').addEventListener('click', closePanel);
+  $('lock-btn').addEventListener('click', toggleLock);
+  $('custody-btn').addEventListener('click', () => { $('custody-modal').hidden = false; custodyKey = ''; updateCustody(); });
   $('save-btn').addEventListener('click', async () => { await save(); if (!state.dirty) toast('Park saved.'); });
   $('logout').addEventListener('click', async () => {
     if (state.dirty) await save();
