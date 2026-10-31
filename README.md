@@ -1,11 +1,15 @@
 # 🎢 Rollercoaster Mogul
 
-A browser-based theme park management game. Sign in with Google or GitHub, lay out paths, build rides and shops, hire staff, keep your guests happy, and compete for the most valuable park on the leaderboard.
+A browser-based 3D theme park management game. Sign in with Google or GitHub, lay out paths, build rides and shops, hire staff, keep your guests happy, and compete for the most valuable park on the leaderboard.
 
 ## Gameplay
 
 - **Paths:** click and drag from the entrance to lay walkways. Guests only walk on paths.
 - **Rides:** 7 rides, from Whirly Teacups to the Comet Corkscrew coaster. Each has its own thrill, intensity, nausea, capacity and reliability. A ride needs a path tile next to it so guests can reach it.
+- **Custom coasters:** choose 🎢 Rides → 🛠️ Design your own coaster, place a station, and lay track piece by piece. Pieces include straights, tight and wide turns, slopes, chain lifts, launch boosters, brakes and vertical loops.
+  - A physics model runs the train around the circuit, accounting for gravity, drag, rolling resistance, banking in turns, and vertical and lateral G-forces.
+  - The test run fails if the train stalls on a hill or can't get round a loop.
+  - Speed, G-forces, airtime, drops and inversions set the ride's excitement, intensity and nausea, which decide who will ride it and what they'll pay.
 - **Shops:** food, drinks and restrooms. Guests get hungry, thirsty and need the restroom, and they leave unhappy if they can't find what they need.
 - **Scenery:** trees, flowers and fountains make nearby guests happier. Benches let tired guests rest. Litter bins cut down on litter.
 - **Staff:** janitors sweep litter. Mechanics fix rides that break down.
@@ -18,7 +22,7 @@ A browser-based theme park management game. Sign in with Google or GitHub, lay o
   Violence leaves blood on the paths, which upsets guests until janitors scrub it away.
 
   You can tune all of this in `CRIME` in `public/js/catalog.js`.
-- **Pandemonium:** a heist crew in panda costumes raids the park from day 4. Members appear at random spots across the park, rob tills, smash rides and shops, and beat up guests. After a while they run for the exit with the loot, and each raid brings a bigger crew. To fight them:
+- **Pandemonium:** pandas throw bamboo back at security. On average they're weaker than an officer: less health, worse aim, slower throws. Officers who run out of health are knocked out for a while. A heist crew in panda costumes raids the park from day 4. Members appear at random spots across the park, rob tills, smash rides and shops, and beat up guests. After a while they run for the exit with the loot, and each raid brings a bigger crew. To fight them:
   - Build a **Security HQ** (🛡️ Security menu, or `G`).
   - Hire **Hot Dog Squad** officers. They hunt the pandas with hot dog launchers, and each panda goes down after 4 hits.
   - If you capture the whole crew, use the **Retribution Rig** to stage a public execution. A catapult hurls the prisoners at full speed into a fire pit, or into a dunk tank where they drown. Spectators pay to watch, every guest gets a big happiness boost, and Safety is fully restored.
@@ -37,7 +41,7 @@ A browser-based theme park management game. Sign in with Google or GitHub, lay o
 - **Guests:** each guest has their own thrill tolerance, budget and needs. Click a guest to see what they're thinking.
 - **Goals and leaderboard:** complete milestones and rank by park value. Your park autosaves to your account.
 
-**Controls:** right-drag, WASD or the arrow keys pan. Scroll or `+`/`-` zooms. `P` selects the path tool, `B` bulldoze, `R` rides, `F` shops, `T` scenery, `G` security. `Space` pauses, `1`/`2`/`3` change speed, and `Esc` cancels.
+**Controls:** right-drag, WASD or the arrow keys pan. `Q`/`E` or middle-drag rotate the camera, and middle-drag also tilts it. Scroll or `+`/`-` zooms. `P` selects the path tool, `B` bulldoze, `R` rides, `F` shops, `T` scenery, `G` security. `Space` pauses, `1`/`2`/`3` change speed, and `Esc` cancels.
 
 ## Running locally
 
@@ -80,7 +84,9 @@ public/
   game.html         the game
   js/catalog.js     rides, shops, scenery, staff, goals (all balancing lives here)
   js/sim.js         deterministic simulation; no DOM, shared with the server
-  js/render.js      procedural isometric canvas renderer (no image assets)
+  js/render3d.js    Three.js WebGL renderer: lighting, shadows, instanced crowds, coaster track
+  js/render.js      2D isometric canvas fallback when WebGL is unavailable
+  js/coaster.js     custom coaster track layout and train physics (shared with the server)
   js/main.js        UI, input, game loop, autosave
 tests/              node:test suites for the sim and the API
 ```

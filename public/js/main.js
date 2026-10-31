@@ -2,19 +2,31 @@ import { api, money, el } from './api.js';
 import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, PANDEMONIUM, CRIME, OBJECTIVES, PATH_COST, GRID, itemDef, itemCategory } from './catalog.js';
 import * as Sim from './sim.js';
 import { Renderer } from './render.js';
+import { Renderer3D, webglAvailable } from './render3d.js';
+import { PIECES, MAX_STEPS, METERS, STEP as HEIGHT_STEP } from './coaster.js';
 
 const STEP = 0.1; // fixed simulation step in game-seconds
 const AUTOSAVE_MS = 45_000;
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('view');
-const renderer = new Renderer(canvas);
+// Prefer the WebGL 3D renderer; fall back to the 2D canvas one.
+let renderer;
+try {
+  renderer = webglAvailable() ? new Renderer3D(canvas) : new Renderer(canvas);
+} catch (err) {
+  console.warn('3D renderer unavailable, using 2D:', err);
+  renderer = new Renderer(canvas);
+}
+const is3D = renderer instanceof Renderer3D;
 
 const state = {
   park: null,
   me: null,
   speed: 1,
   tool: 'inspect',
+  builder: null, // { id, hoverPiece, hoverOk, lastTest }
+  coasterDir: 0,
   buildKind: null,
   palette: null,
   panel: null, // { type, id }
@@ -92,6 +104,9 @@ function frame(now) {
     tool: state.tool,
     selected: state.selected,
     dayProgress: Sim.dayProgress(park),
+    builder: state.builder,
+    coasterDir: state.coasterDir,
+    coasterStartOk: state.hover && state.tool === 'coaster-start' ? Sim.objectAt(park, state.hover.x, state.hover.y) === null && park.tiles[Sim.idx(state.hover.x, state.hover.y)] === Sim.TILE.GRASS : false,
   }, dt);
 
   hudT -= dt;
@@ -196,7 +211,11 @@ function renderPalette() {
     camera: SCENERY.camera, lamp: SCENERY.lamp, firstaid: STALLS.firstaid,
   };
   const items = { ride: RIDES, stall: STALLS, scenery: SCENERY, security }[state.palette];
-  box.replaceChildren(...Object.entries(items).map(([kind, def]) => {
+  const designer = state.palette === 'ride' && el('button', {
+    class: `item designer${state.tool === 'coaster-start' ? ' active' : ''}`,
+    onclick: () => { setTool('coaster-start'); toast('Click a grass tile to place the station. Press X to turn it.'); },
+  }, el('div', { class: 'name' }, '🛠️ Design your own coaster'), el('div', { class: 'meta' }, 'Lay track piece by piece · real physics'));
+  box.replaceChildren(...[designer].filter(Boolean), ...Object.entries(items).map(([kind, def]) => {
     let meta;
     if (kind === 'securityhq') meta = `${money(def.cost)} · unlocks the Hot Dog Squad`;
     else if (kind === 'retribution') meta = `${money(def.cost)} · ${def.w}×${def.h} · public executions`;
@@ -237,11 +256,24 @@ function applyTool(tile, { drag = false } = {}) {
       if (res.warn) toast(res.warn);
       renderPalette();
     } else if (!drag) buildError(res);
+  } else if (state.tool === 'coaster-start') {
+    if (drag) return;
+    const res = Sim.startCoaster(park, tile.x, tile.y, state.coasterDir);
+    if (!res.ok) { buildError(res); return; }
+    renderer.floatText(tile.x + 0.5, tile.y + 0.5, `-${money(PIECES.station.cost)}`, '#ffd9d9');
+    state.palette = null;
+    setTool('inspect');
+    openBuilder(res.obj.id);
   } else if (state.tool === 'inspect') {
     inspect(tile);
     return;
   }
   state.dirty = true;
+}
+
+function openBuilder(id) {
+  state.builder = { id, hoverPiece: null, hoverOk: false, lastTest: null };
+  showPanel({ type: 'builder', id });
 }
 
 function inspect(tile) {
@@ -255,8 +287,10 @@ function inspect(tile) {
     showPanel({ type: guest.role ? 'staff' : 'guest', id: guest.id });
     return;
   }
-  const obj = Sim.objectAt(park, tile.x, tile.y);
-  if (obj && itemCategory(obj.kind) === 'special') showPanel({ type: obj.kind, id: obj.id });
+  const picked = is3D ? Sim.getObject(park, renderer.pickObject(pointer.x, pointer.y)) : null;
+  const obj = picked && itemCategory(picked.kind) !== 'scenery' ? picked : Sim.objectAt(park, tile.x, tile.y);
+  if (obj?.kind === 'custom' && obj.building) openBuilder(obj.id);
+  else if (obj && itemCategory(obj.kind) === 'special') showPanel({ type: obj.kind, id: obj.id });
   else if (obj && itemCategory(obj.kind) !== 'scenery') showPanel({ type: 'object', id: obj.id });
   else if (obj) showPanel({ type: 'scenery', id: obj.id });
   else closePanel();
@@ -268,12 +302,14 @@ function inspect(tile) {
 
 function showPanel(panel) {
   state.panel = panel;
-  state.selected = ['object', 'scenery', 'guest', 'staff', 'securityhq', 'retribution'].includes(panel.type) ? panel.id : null;
+  state.selected = ['object', 'scenery', 'guest', 'staff', 'securityhq', 'retribution', 'builder'].includes(panel.type) ? panel.id : null;
+  if (panel.type !== 'builder') state.builder = null;
   $('panel').hidden = false;
   refreshPanel(true);
 }
 
 function closePanel() {
+  state.builder = null;
   state.panel = null;
   state.selected = null;
   $('panel').hidden = true;
@@ -374,7 +410,87 @@ function updateCustody() {
   ].filter(Boolean));
 }
 
+function designView(d) {
+  if (!d) return null;
+  if (!d.ok) return el('p', { class: 'error small' }, `❌ ${d.reason}`);
+  return el('div', {},
+    el('h3', {}, 'Ride statistics'),
+    kv([
+      ['Top speed', `${d.maxSpeed} km/h`],
+      ['Max vertical G', `${d.maxG} G`],
+      ['Min vertical G', `${d.minG} G`],
+      ['Max lateral G', `${d.maxLat} G`],
+      ['Airtime', `${d.airtime} s`],
+      ['Highest point', `${d.maxHeight} m`],
+      ['Biggest drop', `${d.biggestDrop} m`],
+      ['Inversions', d.inversions],
+      ['Track length', `${d.length} m`],
+      ['Ride time', `${Math.round(d.duration)} s`],
+      ['Excitement', `${d.excitement}/10`],
+      ['Intensity', `${d.intensity}/10${d.intensity > 10 ? ' (extreme!)' : ''}`],
+      ['Nausea', `${d.nausea}/10`],
+    ]),
+    d.warnings.length > 0 && el('ul', { class: 'warnings' }, d.warnings.map((w) => el('li', {}, `⚠ ${w}`))));
+}
+
+const PIECE_ORDER = ['straight', 'left', 'right', 'wideLeft', 'wideRight', 'up', 'down', 'steepUp', 'steepDown', 'lift', 'booster', 'brake', 'loop', 'station'];
+
+function builderAction(fn) {
+  const res = fn();
+  if (res && res.ok === false && res.reason) toast(res.reason, 'warn');
+  if (state.builder) state.builder.lastTest = null;
+  state.dirty = true;
+  refreshPanel(true);
+  return res;
+}
+
 const PANELS = {
+  builder: ({ id }) => {
+    const { park } = state;
+    const o = Sim.getObject(park, id);
+    if (!o || o.kind !== 'custom') return null;
+    if (!o.building) { setTimeout(() => showPanel({ type: 'object', id }), 0); return el('div'); }
+    const b = state.builder || (state.builder = { id, hoverPiece: null, hoverOk: false, lastTest: null });
+    const c = o._layout.cursor;
+    const complete = Sim.coasterComplete(o);
+    const test = b.lastTest;
+    return el('div', { class: 'builder' },
+      el('h2', {}, `🛠️ ${o.name}`),
+      el('input', { class: 'text', value: o.name, maxlength: 40, onchange: (e) => { Sim.renameRide(park, id, e.target.value); state.dirty = true; e.target.blur(); } }),
+      kv([
+        ['Pieces', o.track.pieces.length],
+        ['Track height here', `${c.h * HEIGHT_STEP * METERS} m (max ${MAX_STEPS * HEIGHT_STEP * METERS} m)`],
+        ['Spent so far', money(o.paid)],
+        ['Circuit', complete ? '✅ Complete' : 'Bring the track back into the station'],
+      ]),
+      el('h3', {}, 'Add track'),
+      el('div', { class: 'pieces' }, PIECE_ORDER.map((type) => {
+        const def = PIECES[type];
+        const check = Sim.canAddPiece(park, o, type);
+        return el('button', {
+          class: 'piece', disabled: !check.ok, title: check.ok ? `${def.name} (${money(def.cost)})` : check.reason,
+          onmouseenter: () => { b.hoverPiece = type; b.hoverOk = check.ok; },
+          onmouseleave: () => { if (b.hoverPiece === type) b.hoverPiece = null; },
+          onclick: () => builderAction(() => Sim.addPiece(park, id, type)),
+        }, el('span', { class: 'icon' }, def.icon), el('span', {}, def.name), el('span', { class: 'muted small' }, money(def.cost)));
+      })),
+      el('div', { class: 'actions' },
+        el('button', { class: 'btn', onclick: () => builderAction(() => {
+          const res = Sim.removePiece(park, id);
+          if (res.removed) { closePanel(); toast('Coaster removed and refunded.'); }
+          return res;
+        }) }, o.track.pieces.length > 1 ? '↶ Undo piece' : 'Remove coaster'),
+        el('button', { class: 'btn', disabled: !complete, onclick: () => { b.lastTest = Sim.testCoaster(park, id); refreshPanel(true); } }, '🧪 Test run'),
+        el('button', { class: 'btn btn-primary', disabled: !complete, onclick: () => {
+          const res = Sim.openCoaster(park, id);
+          if (!res.ok) { b.lastTest = res; refreshPanel(true); return; }
+          state.dirty = true;
+          showPanel({ type: 'object', id });
+        } }, '🎢 Open coaster')),
+      test && designView(test),
+      el('p', { class: 'small muted' }, 'Tips: trains need a chain lift or booster to get going. Brakes before tight turns keep G-forces sane, and loops need speed. Backspace undoes the last piece.'));
+  },
+
   wanted: () => {
     const { park } = state;
     const suspects = Sim.knownSuspects(park);
@@ -418,7 +534,7 @@ const PANELS = {
     const { park } = state;
     const o = Sim.getObject(park, id);
     if (!o) return null;
-    const ride = RIDES[o.kind];
+    const ride = Sim.rideDef(o);
     const def = ride || STALLS[o.kind];
     const status = o.broken ? 'Broken down' : !o.open ? 'Closed' : ride ? (o.phase === 'running' ? 'Running' : 'Loading') : 'Open';
     return el('div', {},
@@ -434,6 +550,7 @@ const PANELS = {
         ['Upkeep', `${money(def.upkeep)}/day`],
         o._access.length === 0 && ['Access', '⚠ Not connected to a path'],
       ]),
+      o.kind === 'custom' && designView(o._design),
       o.exposed && el('p', { class: 'error small' }, `💊 This vendor has been caught selling drugs under the counter (${o.deals} known deals). Replace them!`),
       !FREE.has(def.sells) && el('h3', {}, 'Price'),
       !FREE.has(def.sells) && stepper(`$${o.price.toFixed(o.price % 1 ? 2 : 0)}`,
@@ -443,7 +560,17 @@ const PANELS = {
         ? `Guests will typically pay up to about ${money(1.5 + ride.excitement * 1.05)}.`
         : 'Guests balk at overpriced food and drinks.'),
       el('div', { class: 'actions' },
-        el('button', { class: 'btn', onclick: () => { Sim.setOpen(park, id, !o.open); state.dirty = true; refreshPanel(true); } }, o.open ? 'Close' : 'Open'),
+        o.kind !== 'custom' && el('button', { class: 'btn', onclick: () => { Sim.setOpen(park, id, !o.open); state.dirty = true; refreshPanel(true); } }, o.open ? 'Close' : 'Open'),
+        o.kind === 'custom' && el('button', { class: 'btn', onclick: () => { Sim.setOpen(park, id, !o.open); state.dirty = true; refreshPanel(true); } }, o.open ? 'Close' : 'Reopen'),
+        o.kind === 'custom' && el('button', {
+          class: 'btn',
+          onclick: () => {
+            const res = Sim.editCoaster(park, id);
+            if (!res.ok) { toast(res.reason, 'warn'); return; }
+            state.dirty = true;
+            openBuilder(id);
+          },
+        }, '🛠️ Edit design'),
         'corrupt' in o && el('button', {
           class: `btn${o.exposed ? ' btn-primary' : ''}`,
           onclick: () => {
@@ -786,6 +913,7 @@ function bindInput() {
     Object.assign(pointer, { x: e.offsetX, y: e.offsetY, startX: e.offsetX, startY: e.offsetY, down: true, moved: false });
     const touchPan = e.pointerType === 'touch' && state.tool === 'inspect';
     pointer.pan = e.button === 1 || e.button === 2 || keys.has(' ') || touchPan;
+    pointer.orbit = is3D && (e.button === 1 || (e.button === 2 && e.shiftKey));
     if (pointer.pan || e.button !== 0) return;
     const tile = tileAt(e.offsetX, e.offsetY);
     pointer.lastTile = tile;
@@ -799,6 +927,7 @@ function bindInput() {
     const tile = tileAt(e.offsetX, e.offsetY);
     state.hover = Sim.inBounds(tile.x, tile.y) ? tile : null;
     if (!pointer.down) return;
+    if (pointer.orbit) { renderer.rotate(-dx * 0.008); renderer.tilt(dy * 0.006); return; }
     if (pointer.pan) { renderer.pan(dx, dy); return; }
     const paint = state.tool === 'path' || state.tool === 'bulldoze' || state.tool === 'build';
     if (paint && pointer.lastTile && (tile.x !== pointer.lastTile.x || tile.y !== pointer.lastTile.y)) {
@@ -841,6 +970,16 @@ function bindInput() {
     else if (k === 'g') togglePalette('security');
     else if (k === '=' || k === '+') renderer.zoomAt(1.15, canvas.clientWidth / 2, canvas.clientHeight / 2);
     else if (k === '-') renderer.zoomAt(1 / 1.15, canvas.clientWidth / 2, canvas.clientHeight / 2);
+    else if (k === 'q' && renderer.rotate) renderer.rotate(Math.PI / 8);
+    else if (k === 'e' && renderer.rotate) renderer.rotate(-Math.PI / 8);
+    else if (k === 'x' && state.tool === 'coaster-start') state.coasterDir = (state.coasterDir + 1) % 4;
+    else if (e.key === 'Backspace' && state.builder) {
+      e.preventDefault();
+      const res = Sim.removePiece(state.park, state.builder.id);
+      if (res.removed) closePanel();
+      state.dirty = true;
+      refreshPanel(true);
+    }
   });
   window.addEventListener('keyup', (e) => keys.delete(e.key));
   setInterval(() => {

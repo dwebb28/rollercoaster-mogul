@@ -101,6 +101,7 @@ export function createApp(config) {
   });
 
   app.use('/api', api);
+  app.use('/vendor/three', express.static(join(here, '..', 'node_modules', 'three', 'build'), { maxAge: '7d' }));
   app.use(express.static(join(here, '..', 'public'), { extensions: ['html'] }));
 
   // eslint-disable-next-line no-unused-vars
