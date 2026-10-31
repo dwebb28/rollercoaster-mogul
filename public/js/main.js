@@ -302,7 +302,7 @@ function inspect(tile) {
 
 function showPanel(panel) {
   state.panel = panel;
-  state.selected = ['object', 'scenery', 'guest', 'staff', 'securityhq', 'retribution', 'builder'].includes(panel.type) ? panel.id : null;
+  state.selected = ['object', 'scenery', 'guest', 'staff', 'securityhq', 'retribution', 'memorial', 'builder'].includes(panel.type) ? panel.id : null;
   if (panel.type !== 'builder') state.builder = null;
   $('panel').hidden = false;
   refreshPanel(true);
@@ -444,6 +444,72 @@ function builderAction(fn) {
   return res;
 }
 
+const TIPS = [
+  ['🚀 Getting started', [
+    'Paths are everything: guests only walk on paths, and rides and shops need a path tile next to them.',
+    'Start with a couple of cheap flat rides, a food stall, a drink stall and restrooms, then add a coaster.',
+    'Guests leave when they are unhappy, tired, broke, or have been in the park for over two days.',
+    'Click any guest to read their thoughts. They tell you what your park is missing.',
+  ]],
+  ['💰 Money & prices', [
+    'You earn from admission, ride tickets and shop sales. Wages and upkeep are charged at the end of each day.',
+    'Guests compare a ticket price with how exciting the ride is. Overpriced rides and food get refused.',
+    'Your park value (cash plus 80% of what you have built) is your leaderboard score.',
+  ]],
+  ['🎢 Designing coasters', [
+    'Rides → Design your own coaster. Place a station (press X to rotate it), then add track pieces.',
+    'Trains leave the station slowly, so you need a chain lift or a launch booster to build energy.',
+    'Speed comes from height: every metre you drop turns into speed, minus friction and air resistance.',
+    'Tight turns at speed produce brutal lateral G. Use wide turns, or brakes before tight turns.',
+    'Sharp changes from steep slopes to flat track cause high vertical G. Ease in with gentle slopes.',
+    'Loops need roughly 70 km/h on entry, or the train falls back.',
+    'Brakes hold the train at a steady crawl, which is handy for the run back into the station.',
+    'Excitement rises with speed, drops, airtime and inversions. Intensity above 10 scares most guests away.',
+    'Use Test run to see speed, G-forces and airtime before opening. Edit a coaster any time from its panel.',
+  ]],
+  ['🚨 Crime & safety', [
+    'Some visitors are pickpockets, brawlers, robbers or drug dealers. Every crime lowers your Safety score.',
+    'Low Safety hurts your park rating and scares new visitors away.',
+    'Security guards discourage crime nearby, chase suspects and arrest them. Cameras identify culprits.',
+    'Crime is more likely at dusk, unless the area is lit by lamp posts.',
+    'Violence leaves blood on the paths that upsets guests until janitors scrub it away.',
+    'A First Aid Post treats injured guests and makes fatal assaults less likely.',
+  ]],
+  ['💊 Drugs & gangs', [
+    'Dealers and corrupt shop vendors sell drugs. Unhappy guests are more likely to buy.',
+    'Guests who are high cannot find the exit, and some join a crime gang when they come down.',
+    'Guards and cameras near a shop can expose a corrupt vendor. Replace them from the shop panel.',
+    'The 🚨 Wanted list shows every identified suspect, their record and gang activity.',
+  ]],
+  ['⚖️ Custody & sentencing', [
+    'Everyone apprehended waits in custody for your verdict: release, fine, or execution.',
+    'Releasing costs Safety. Fines grow with the offender\'s record.',
+    'Executions need a Retribution Rig. Spectators pay to watch, every guest cheers up, and Safety is restored.',
+  ]],
+  ['🐼 Pandemonium', [
+    'From day 4 a heist crew in panda costumes may raid the park, appearing everywhere at once. Each raid brings more pandas.',
+    'They rob tills, smash rides and shops, and attack guests. Only the Hot Dog Squad can bring them down.',
+    'Build a Security HQ to hire squad officers. Pandas are weaker than officers one-on-one, but they gang up.',
+    'One officer usually loses to a full crew. Two or more usually win.',
+    'Capture the whole crew to stop them escaping with your money.',
+  ]],
+  ['🪦 Officer deaths & insurance', [
+    `When pandas knock out an officer, there is a ${Math.round(PANDEMONIUM.killChance * 100)}% chance the officer is killed instead.`,
+    `The park pays life insurance to the family: ${money(PANDEMONIUM.lifeInsurance.squad)} per squad officer and ${money(PANDEMONIUM.lifeInsurance.guard)} per guard.`,
+    'The fallen are buried in a mass grave inside the park, under the Fallen Officers Memorial, which cannot be removed.',
+    'The cheapest way to avoid payouts is enough officers that none of them fights alone.',
+  ]],
+  ['🔒 Lockdown', [
+    'Install barbed wire fencing from the Park panel to lock the exits at any time.',
+    'While locked, nobody enters or leaves. Criminals and pandas are trapped with your security, but so are your guests, who get angry.',
+  ]],
+  ['🎮 Controls', [
+    'Right-drag or WASD/arrow keys: pan. Scroll: zoom. Q/E or middle-drag: rotate (middle-drag also tilts).',
+    'P: path, B: bulldoze, R: rides, F: shops, T: scenery, G: security. Space: pause. 1/2/3: speed. Esc: cancel.',
+    'In the coaster builder, Backspace undoes the last piece.',
+  ]],
+];
+
 const PANELS = {
   builder: ({ id }) => {
     const { park } = state;
@@ -526,6 +592,7 @@ const PANELS = {
       el('li', {}, 'Add 🍔 Shops and restrooms so guests stay fed and comfortable.'),
       el('li', {}, 'Hire janitors, mechanics and security guards from 🧹 Staff.'),
       el('li', {}, 'Watch your Safety score: some visitors are thieves, brawlers or robbers.'),
+      el('li', {}, 'Open 💡 Tips any time for a guide to every system.'),
       el('li', {}, 'Bulldoze trees to make room — and plant scenery to make guests happy.')),
     el('p', { class: 'small muted' }, 'Your park saves automatically to your account.'),
     el('div', { class: 'actions' }, el('button', { class: 'btn btn-primary', onclick: closePanel }, "Let's build!"))),
@@ -703,6 +770,30 @@ const PANELS = {
       el('p', { class: 'small muted' }, `Spectators pay ${money(PANDEMONIUM.spectatorFee)}. Afterwards every guest gets a big happiness boost and Safety is fully restored.`));
   },
 
+  memorial: ({ id }) => {
+    const { park } = state;
+    if (!Sim.getObject(park, id)) return null;
+    const total = park.fallen.reduce((n, f) => n + f.payout, 0);
+    return el('div', {},
+      el('h2', {}, '🪦 Fallen Officers Memorial'),
+      el('p', { class: 'muted small' }, 'A mass grave and memorial honouring the security staff who gave their lives defending this park. It cannot be removed.'),
+      kv([
+        ['Officers laid to rest', park.fallen.length],
+        ['Life insurance paid to families', money(total)],
+      ]),
+      el('h3', {}, 'In memory of'),
+      el('ul', { class: 'list' }, [...park.fallen].reverse().map((f) => el('li', {},
+        el('div', {}, el('div', {}, f.name), el('div', { class: 'small muted' }, `Killed by ${f.by} on day ${f.day}`)),
+        el('span', { class: 'small muted' }, money(f.payout))))),
+      el('p', { class: 'small muted' }, 'More officers, fewer raiders per officer, and a Security HQ close to the action keep your staff alive.'));
+  },
+
+  tips: () => el('div', { class: 'tips' },
+    el('h2', {}, '💡 Player tips'),
+    ...TIPS.map(([title, items]) => el('details', {},
+      el('summary', {}, title),
+      el('ul', {}, items.map((t) => el('li', {}, t)))))),
+
   staff_list: () => {
     const { park } = state;
     return el('div', {},
@@ -790,6 +881,7 @@ const PANELS = {
         ['Ride tickets', money(t.rides)],
         ['Shops (net)', money(t.shops)],
         ['Construction (net)', money(t.construction)],
+        t.insurance && ['Life insurance payouts', money(t.insurance)],
         ['Profit so far', money(t.income - t.expenses)],
       ]),
       hist.length > 0 && el('h3', {}, 'Recent days: income vs. expenses'),
@@ -998,6 +1090,7 @@ function bindInput() {
       else if (b.dataset.panel === 'staff') showPanel({ type: 'staff_list' });
       else if (b.dataset.panel === 'park') showPanel({ type: 'park' });
       else if (b.dataset.panel === 'wanted') showPanel({ type: 'wanted' });
+      else if (b.dataset.panel === 'tips') showPanel({ type: 'tips' });
     });
   }
   for (const b of document.querySelectorAll('.speed button')) b.addEventListener('click', () => setSpeed(Number(b.dataset.speed)));

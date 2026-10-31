@@ -538,7 +538,7 @@ export class Renderer3D {
     for (const o of park.objects) {
       if (o.kind === 'tree' || o.kind === 'pine' || o.kind === 'flowers') continue; // instanced
       seen.add(o.id);
-      const version = o.kind === 'custom' ? `${o._version}|${o.building}` : o.kind === 'retribution' ? o.pit : 1;
+      const version = o.kind === 'custom' ? `${o._version}|${o.building}` : o.kind === 'retribution' ? o.pit : o.kind === 'memorial' ? o.graves : 1;
       let entry = this.objects.get(o.id);
       if (entry && entry.version !== version) {
         this.scene.remove(entry.group);
@@ -589,6 +589,9 @@ export class Renderer3D {
     } else if (o.kind === 'retribution') {
       group.position.set(cx, 0, cz);
       animate = this.buildRig(o, group);
+    } else if (o.kind === 'memorial') {
+      group.position.set(cx, 0, cz);
+      animate = this.buildMemorial(o, group);
     } else {
       group.position.set(cx, 0, cz);
       animate = this.buildSceneryObject(o, group);
@@ -1098,6 +1101,40 @@ export class Renderer3D {
       }
       if (u < 0.75) flyer.traverse((m) => { if (m.isMesh) m.material = M(m.userData.black ? 0x161616 : 0xf5f5f5); });
     };
+  }
+
+  /** Mass grave and memorial: a stone plaza, obelisk, and a headstone per fallen officer. */
+  buildMemorial(o, g) {
+    const plaza = box(1.9, 0.08, 1.9, 0x9a9890); plaza.position.y = 0.04; g.add(plaza);
+    const soil = box(1.3, 0.05, 0.75, 0x4a3524); soil.position.set(0, 0.1, 0.35); g.add(soil); // the mass grave
+    const plinth = box(0.5, 0.18, 0.5, 0x6d717a); plinth.position.set(0, 0.17, -0.5); g.add(plinth);
+    const obelisk = mesh(new THREE.CylinderGeometry(0.06, 0.16, 1.5, 4), M(0xc9ccd2)); obelisk.position.set(0, 1.0, -0.5); obelisk.rotation.y = Math.PI / 4; g.add(obelisk);
+    const tip = mesh(new THREE.ConeGeometry(0.085, 0.16, 4), M(0xd8b04a, { metalness: 0.6, roughness: 0.3 })); tip.position.set(0, 1.83, -0.5); tip.rotation.y = Math.PI / 4; g.add(tip);
+    const plaque = mesh(new THREE.PlaneGeometry(0.42, 0.14), new THREE.MeshStandardMaterial({ map: textTexture('IN MEMORIAM', { bg: '#3b3f46', color: '#e8d18a', font: 'bold 34px Georgia, serif' }) }));
+    plaque.position.set(0, 0.2, -0.24); g.add(plaque);
+    const wreath = mesh(new THREE.TorusGeometry(0.12, 0.035, 6, 14), M(0x2f6b3a)); wreath.position.set(0, 0.42, -0.24); g.add(wreath);
+    const bow = box(0.06, 0.06, 0.02, 0xc81d25); bow.position.set(0, 0.3, -0.22); g.add(bow);
+    // One headstone per fallen officer, in rows on the grave.
+    const n = Math.min(o.graves || 0, 24);
+    for (let k = 0; k < n; k++) {
+      const row = Math.floor(k / 6), col = k % 6;
+      const stone = box(0.12, 0.2, 0.04, 0xb8bcc4);
+      stone.position.set(-0.55 + col * 0.22, 0.2, 0.1 + row * 0.2);
+      g.add(stone);
+      const top = mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.04, 10, 1, false, 0, Math.PI), M(0xb8bcc4));
+      top.rotation.set(Math.PI / 2, 0, Math.PI / 2);
+      top.position.set(-0.55 + col * 0.22, 0.3, 0.1 + row * 0.2);
+      g.add(top);
+    }
+    for (let k = 0; k < 10; k++) {
+      const f = sphere(0.03, [0xffffff, 0xe5484d, 0xffd23f][k % 3]);
+      f.position.set(-0.85 + hash(o.id + k) * 1.7, 0.1, 0.85 - hash(o.id * 3 + k) * 0.15);
+      g.add(f);
+    }
+    const flame = sphere(0.04, 0xffb347, { emissive: 0xff7a00, emissiveIntensity: 1.5 });
+    flame.position.set(0, 0.32, -0.5);
+    g.add(flame);
+    return (obj, t) => { flame.scale.setScalar(0.8 + Math.abs(Math.sin(t * 9)) * 0.5); };
   }
 
   makePanda(scale = 1) {

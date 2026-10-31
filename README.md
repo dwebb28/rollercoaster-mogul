@@ -27,6 +27,10 @@ A browser-based 3D theme park management game. Sign in with Google or GitHub, la
   - Hire **Hot Dog Squad** officers. They hunt the pandas with hot dog launchers, and each panda goes down after 4 hits.
   - If you capture the whole crew, use the **Retribution Rig** to stage a public execution. A catapult hurls the prisoners at full speed into a fire pit, or into a dunk tank where they drown. Spectators pay to watch, every guest gets a big happiness boost, and Safety is fully restored.
 
+- **Fallen officers:** when pandas knock out an officer, there's a 25% chance the officer is killed instead.
+  - The park pays life insurance to the family: $5,000 per squad officer and $3,000 per guard.
+  - The fallen are buried in a mass grave inside the park, under a **Fallen Officers Memorial**. It's placed automatically beside a path near the entrance, gains a headstone for each death, and can't be bulldozed.
+
   You can tune all of this in `PANDEMONIUM` in `public/js/catalog.js`.
 - **Suspects and sentencing:** every criminal keeps a record: thefts, assaults, robberies, drug deals, killings, money stolen and gang. Click an identified suspect to see their record, or open the 🚨 **Wanted** list to see every known suspect at large and gang activity. Everyone apprehended, pandas included, goes into custody, and you're asked to:
   - **Release** them, which costs some Safety.
@@ -39,6 +43,7 @@ A browser-based 3D theme park management game. Sign in with Google or GitHub, la
 - **Barbed wire perimeter:** costs $15,000 plus upkeep. Once it's up you can lock the exits at any time. Nobody gets in or out, criminals and Pandemonium included, but trapped guests get angry and your rating drops.
 - **Economy:** you set the entrance fee and the price of every ride and shop. If prices are too high, guests refuse to pay. You pay staff wages and ride upkeep every day.
 - **Guests:** each guest has their own thrill tolerance, budget and needs. Click a guest to see what they're thinking.
+- **💡 Tips:** the in-game Tips panel explains every system, from coaster physics to sentencing, insurance and lockdown.
 - **Goals and leaderboard:** complete milestones and rank by park value. Your park autosaves to your account.
 
 **Controls:** right-drag, WASD or the arrow keys pan. `Q`/`E` or middle-drag rotate the camera, and middle-drag also tilts it. Scroll or `+`/`-` zooms. `P` selects the path tool, `B` bulldoze, `R` rides, `F` shops, `T` scenery, `G` security. `Space` pauses, `1`/`2`/`3` change speed, and `Esc` cancels.

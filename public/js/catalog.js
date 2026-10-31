@@ -82,6 +82,8 @@ export const STAFF = {
 export const SPECIAL = {
   securityhq: { name: 'Security HQ', w: 2, h: 2, cost: 5000, upkeep: 60, color: '#2b4c7e' },
   retribution: { name: 'Retribution Rig', w: 4, h: 3, cost: 12000, upkeep: 40, color: '#5a1a1a' },
+  // Placed automatically when an officer is killed; cannot be bought or bulldozed.
+  memorial: { name: 'Fallen Officers Memorial', w: 2, h: 2, cost: 0, upkeep: 0, color: '#8a8f98', auto: true },
 };
 
 /** Pandemonium: a raiding heist crew in panda costumes. */
@@ -109,6 +111,9 @@ export const PANDEMONIUM = {
   throwRange: 4,
   throwCooldown: 1.3,
   knockoutSeconds: 35, // staff out of action when their health runs out
+  killChance: 0.25, // chance a knockout is fatal instead
+  lifeInsurance: { squad: 5000, guard: 3000 }, // paid to the family of a fallen officer
+  memorialSafetyBonus: 2, // the memorial reassures guests a little
   downedSeconds: 3,
   escapeSafetyHit: 25,
   defeatSafetyBonus: 20,

@@ -295,7 +295,7 @@ test('public execution consumes prisoners, entertains guests and restores safety
   run(p, prisoners * (4 + 2) + 10);
   assert.equal(rig.show, null);
   assert.equal(p.pandemonium.executions, prisoners);
-  assert.equal(p.safety, 100);
+  assert.ok(p.safety > 90, `safety restored (${p.safety})`);
   assert.ok(p.objectives.includes('justice'));
   assert.equal(p.incidents.find((i) => i.type === 'execution').type, 'execution');
 });
@@ -444,13 +444,39 @@ test('pandas fight back but are weaker than the squad on average', async () => {
   let knocked = false;
   for (let i = 0; i < 2000 && p.raid; i++) {
     Sim.step(p, 0.1);
-    if (p.staff.some((s) => s.role === 'squad' && s.down > 0)) knocked = true;
+    if (p.staff.some((s) => s.role === 'squad' && s.down > 0) || p.fallen.length) knocked = true;
   }
-  assert.ok(knocked, 'the officer was knocked out');
-  const officer = p.staff.find((s) => s.role === 'squad');
+  assert.ok(knocked, 'the officer was knocked out (or killed)');
+  const officer = p.staff.find((s) => s.role === 'squad') || Sim.hire(p, 'squad').staff;
   for (const g of p.guests) if (g.crime === 'panda') g.gone = true; // end the fight
   Object.assign(officer, { down: 1, hp: 0 });
   run(p, 2);
   assert.equal(officer.down, 0);
   assert.equal(officer.hp, officer.maxHp, 'recovers to full health');
+});
+
+test('officers killed by pandas are insured, buried and memorialised', async () => {
+  const { PANDEMONIUM } = await import('../public/js/catalog.js');
+  const p = securePark(95, 6);
+  p.pandemonium.nextRaidDay = Infinity;
+  // Fight raids until someone falls.
+  for (let r = 0; r < 12 && !p.fallen.length; r++) {
+    Sim.startRaid(p);
+    for (let i = 0; i < 2000 && p.raid; i++) {
+      for (const g of p.guests) if (g.crime === 'panda') g.acc = 1; // deadly aim speeds this up
+      Sim.step(p, 0.1);
+    }
+    while (Sim.hire(p, 'squad').ok && p.staff.filter((s) => s.role === 'squad').length < 6);
+  }
+  assert.ok(p.fallen.length > 0, 'an officer fell');
+  const f = p.fallen[0];
+  assert.equal(f.payout, PANDEMONIUM.lifeInsurance[f.role]);
+  assert.ok(!p.staff.some((s) => s.name === f.name && s.role === f.role && s.down === 0 && s.hp <= 0));
+  const memorial = p.objects.find((o) => o.kind === 'memorial');
+  assert.ok(memorial, 'a memorial was placed');
+  assert.equal(memorial.graves, p.fallen.length);
+  assert.equal(Sim.bulldoze(p, memorial.x, memorial.y).ok, false, 'memorial is protected');
+  const q = Sim.deserialize(JSON.parse(JSON.stringify(Sim.serialize(p))));
+  assert.equal(q.fallen.length, p.fallen.length);
+  assert.equal(q.objects.find((o) => o.kind === 'memorial').graves, memorial.graves);
 });

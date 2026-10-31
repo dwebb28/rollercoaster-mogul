@@ -64,6 +64,7 @@ export function createPark(name = 'New Park', seed = Date.now()) {
     raid: null,
     captives: [],
     custody: [],
+    fallen: [],
     fence: false,
     locked: false,
     pandemonium: newPandaStats(),
@@ -98,7 +99,7 @@ function newPandaStats() {
 }
 
 function newLedger() {
-  return { income: 0, expenses: 0, admissions: 0, rides: 0, shops: 0, wages: 0, upkeep: 0, construction: 0, crime: 0, shows: 0, fines: 0, crimeCount: 0 };
+  return { income: 0, expenses: 0, admissions: 0, rides: 0, shops: 0, wages: 0, upkeep: 0, construction: 0, crime: 0, shows: 0, fines: 0, insurance: 0, crimeCount: 0 };
 }
 
 /** Ground tiles an object stands on (custom coasters follow their track). */
@@ -238,6 +239,7 @@ export function deserialize(data) {
       broken: o.broken === true,
       stats: { riders: num(o.stats?.riders, 0, 1e9), revenue: num(o.stats?.revenue, 0, 1e10) },
       ...(o.kind === 'retribution' ? { pit: o.pit === 'water' ? 'water' : 'fire', show: null } : {}),
+      ...(o.kind === 'memorial' ? { graves: num(o.graves, 0, 500, 0) } : {}),
       ...(STALLS[o.kind] ? { corrupt: o.corrupt === true, exposed: o.corrupt === true && o.exposed === true, deals: num(o.deals, 0, 1e6) } : {}),
     }));
   }
@@ -308,6 +310,12 @@ export function deserialize(data) {
       text: String(t?.text ?? '').slice(0, 160), day: num(t?.day, 0, 1e7),
     }));
   }
+  if (Array.isArray(data.fallen)) {
+    park.fallen = data.fallen.slice(0, 500).map((f) => ({
+      name: String(f?.name ?? 'Officer').slice(0, 40), role: STAFF[f?.role] ? f.role : 'squad',
+      by: String(f?.by ?? 'Pandemonium').slice(0, 40), day: num(f?.day, 0, 1e7), payout: num(f?.payout, 0, 1e7),
+    }));
+  }
   if (Array.isArray(data.captives)) {
     park.captives = data.captives.slice(0, 50).map((c) => ({ name: String(c?.name ?? 'Panda').slice(0, 30) }));
   }
@@ -346,7 +354,7 @@ export function deserialize(data) {
 function createEmpty() {
   return {
     version: 1, name: '', rngState: 1, time: 0, cash: 0, entranceFee: 10, open: true, rating: 500, safety: 100, nextId: 1,
-    tiles: [], litter: [], stains: [], objects: [], guests: [], staff: [], raid: null, captives: [], custody: [], fence: false, locked: false, pandemonium: newPandaStats(),
+    tiles: [], litter: [], stains: [], objects: [], guests: [], staff: [], raid: null, captives: [], custody: [], fallen: [], fence: false, locked: false, pandemonium: newPandaStats(),
     stats: { totalGuests: 0, peakGuests: 0, arrests: 0, crimes: 0, drugDeals: 0, gangRecruits: 0, today: newLedger(), history: [] },
     thoughts: [], incidents: [], objectives: [],
   };
@@ -491,6 +499,7 @@ export function bulldoze(park, x, y) {
   const i = idx(x, y);
   const obj = objectAt(park, x, y);
   if (obj) {
+    if (obj.kind === 'memorial') return { ok: false, reason: 'The memorial to fallen officers cannot be removed.' };
     removeObject(park, obj);
     return { ok: true, refund: Math.round(obj.paid * REFUND_RATE) };
   }
@@ -1633,6 +1642,10 @@ function pandaFight(park, g, dt) {
   if (!hit) return;
   target.hp--;
   if (target.hp > 0) return;
+  if (rand(park) < PANDEMONIUM.killChance) {
+    killOfficer(park, target, g);
+    return;
+  }
   target.down = PANDEMONIUM.knockoutSeconds;
   target.chase = null;
   target.route = null;
@@ -1643,6 +1656,75 @@ function pandaFight(park, g, dt) {
   fx(park, { type: 'blood', x: to.x, y: to.y, amount: 1 });
   logIncident(park, 'assault', `${target.name} was knocked out by ${g.name} of Pandemonium.`);
   park._events.push({ type: 'warn', text: `🐼 ${g.name} knocked out ${target.name}!` });
+}
+
+/** An officer dies in the line of duty: insurance, burial and a memorial. */
+function killOfficer(park, s, killer) {
+  const pos = actorPos(s);
+  const i = idx(s.x, s.y);
+  if (park.tiles[i] !== TILE.GRASS) park.stains[i] = 3;
+  fx(park, { type: 'blood', x: pos.x, y: pos.y, amount: 3 });
+  park.staff.splice(park.staff.indexOf(s), 1);
+  const payout = PANDEMONIUM.lifeInsurance[s.role] || 0;
+  if (payout) spend(park, payout, 'insurance');
+  park.fallen.push({ name: s.name, role: s.role, by: killer.name, day: day(park), payout });
+  const memorial = buryFallen(park);
+  logIncident(park, 'homicide', `${s.name} was killed in the line of duty by ${killer.name} of Pandemonium.`);
+  park._events.push({ type: 'warn', text: `🪦 ${s.name} was killed by ${killer.name}. $${payout.toLocaleString()} life insurance paid to the family.` });
+  park._events.push({ type: 'info', text: memorial
+    ? `${s.name} has been laid to rest at the Fallen Officers Memorial.`
+    : `${s.name} has been laid to rest. Clear a 2×2 space for a memorial.` });
+  for (const g of park.guests) {
+    if (!g.crime && dist2(actorPos(g), pos) <= 16) think(park, g, 'They killed an officer... this park is a war zone.');
+  }
+}
+
+/** Adds a grave to the memorial, creating it on free ground near the entrance. */
+function buryFallen(park) {
+  let m = park.objects.find((o) => o.kind === 'memorial');
+  if (!m) {
+    const spot = memorialSpot(park);
+    if (!spot) return null;
+    for (const o of spot.clear) removeObject(park, o);
+    m = addObject(park, 'memorial', spot.x, spot.y, 0);
+    m.graves = 0;
+  }
+  m.graves = park.fallen.length;
+  park.safety = Math.min(100, park.safety + PANDEMONIUM.memorialSafetyBonus);
+  return m;
+}
+
+function memorialSpot(park) {
+  const free = (x, y, clear) => {
+    for (let yy = y; yy < y + 2; yy++) {
+      for (let xx = x; xx < x + 2; xx++) {
+        if (!inBounds(xx, yy)) return false;
+        const i = idx(xx, yy);
+        if (park.tiles[i] !== TILE.GRASS) return false;
+        const o = park._byId.get(park._objAt[i]);
+        if (!o) continue;
+        if (!['tree', 'pine', 'flowers'].includes(o.kind)) return false; // only clear plants
+        if (!clear.includes(o)) clear.push(o);
+      }
+    }
+    return true;
+  };
+  let best = null;
+  for (let y = 0; y < GRID - 1; y++) {
+    for (let x = 0; x < GRID - 1; x++) {
+      if (Math.abs(x + 0.5 - ENTRANCE.x) < 3 && y + 2 >= ENTRANCE.y - 1) continue; // keep the gate clear
+      const clear = [];
+      if (!free(x, y, clear)) continue;
+      // Prefer a spot beside a path, close to the entrance, needing little clearing.
+      let pathNear = false;
+      for (let yy = y - 1; yy <= y + 2 && !pathNear; yy++) {
+        for (let xx = x - 1; xx <= x + 2; xx++) if (inBounds(xx, yy) && park.tiles[idx(xx, yy)] === TILE.PATH) { pathNear = true; break; }
+      }
+      const score = Math.hypot(x + 1 - ENTRANCE.x, y + 1 - ENTRANCE.y) + clear.length * 2 + (pathNear ? 0 : 15);
+      if (!best || score < best.score) best = { x, y, clear, score };
+    }
+  }
+  return best;
 }
 
 /** Squad officers hunt the nearest panda during a raid. */
