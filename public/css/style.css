@@ -190,3 +190,29 @@ input.text { width: 100%; padding: 0.45rem 0.6rem; border: 1px solid var(--borde
 .tips summary { cursor: pointer; font-weight: 700; padding: 4px 0; }
 .tips ul { margin: 6px 0 4px; padding-left: 18px; font-size: 0.86rem; line-height: 1.45; }
 .tips li { margin-bottom: 4px; }
+
+.setup { width: min(640px, 100%); }
+.setup fieldset, .rules fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px 4px; margin: 12px 0 0; }
+.setup legend, .rules legend { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding: 0 4px; }
+.setting { display: grid; grid-template-columns: 150px 1fr; gap: 2px 10px; align-items: center; margin: 6px 0; font-size: 0.9rem; }
+.setting label { font-weight: 600; }
+.setting .help { grid-column: 2; }
+.setting select, .setting input[type=number] { padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.setting .range { display: flex; align-items: center; gap: 8px; }
+.setting .range input { flex: 1; }
+.setting .seed { display: flex; gap: 6px; }
+@media (max-width: 560px) { .setting { grid-template-columns: 1fr; } .setting .help { grid-column: 1; } }
+.swatches { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.swatch-btn { width: 22px; height: 22px; border-radius: 6px; border: 2px solid rgba(0,0,0,0.15); cursor: pointer; padding: 0; }
+.swatch-btn.active { outline: 2px solid var(--ink); outline-offset: 1px; }
+.swatches input[type=color] { width: 30px; height: 24px; padding: 0; border: none; background: none; cursor: pointer; }
+.traits { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.trait { background: #ffe9a8; border-radius: 999px; padding: 2px 8px; font-size: 0.75rem; font-weight: 600; }
+.uniforms { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 0.82rem; }
+.uniform { display: flex; align-items: center; gap: 6px; }
+.uniform input { width: 28px; height: 22px; border: none; padding: 0; background: none; }
+textarea.code { font-family: ui-monospace, monospace; font-size: 0.72rem; margin-top: 6px; resize: vertical; word-break: break-all; }
+.panel .text + .kv, .panel input.text { margin: 6px 0; }
+.panel .setting { grid-template-columns: 1fr; }
+.panel .setting .help { grid-column: 1; }
+.panel fieldset { min-width: 0; }

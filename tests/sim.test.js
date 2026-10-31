@@ -76,8 +76,9 @@ test('mechanics repair broken rides', () => {
   run(p, 5);
   const wheel = p.objects.find((o) => o.kind === 'skywheel');
   wheel.broken = true;
-  run(p, 60);
-  assert.equal(wheel.broken, false);
+  let repaired = false;
+  for (let i = 0; i < 600 && !repaired; i++) { Sim.step(p, 0.1); repaired = !wheel.broken; }
+  assert.ok(repaired, 'a mechanic fixed it');
 });
 
 test('janitors sweep litter', () => {
@@ -119,7 +120,7 @@ test('serialize/deserialize round-trips and keeps simulating', () => {
 test('deserialize rejects malformed or tampered saves', () => {
   const good = Sim.serialize(Sim.createPark('X', 9));
   assert.throws(() => Sim.deserialize(null));
-  assert.throws(() => Sim.deserialize({ ...good, version: 2 }));
+  assert.throws(() => Sim.deserialize({ ...good, version: 99 }));
   assert.throws(() => Sim.deserialize({ ...good, tiles: 'abc' }));
   assert.throws(() => Sim.deserialize({ ...good, objects: [{ id: 1, kind: 'nuke', x: 0, y: 0 }] }));
   const overlap = structuredClone(good);

@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { openDatabase } from './db.js';
 import { SqliteSessionStore } from './session-store.js';
 import { setupAuth } from './auth.js';
-import { deserialize, parkSummary } from '../public/js/sim.js';
+import { deserialize, serialize, parkSummary } from '../public/js/sim.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MAX_PARK_BYTES = 2 * 1024 * 1024;
@@ -82,7 +82,8 @@ export function createApp(config) {
     const summary = parkSummary(park);
     db.savePark(req.user.id, {
       name: summary.name,
-      data: JSON.stringify(req.body),
+      // Store the canonical, validated form rather than the raw upload.
+      data: JSON.stringify(serialize(park)),
       value: summary.value,
       rating: summary.rating,
       guests: summary.guests,

@@ -4,6 +4,19 @@ A browser-based 3D theme park management game. Sign in with Google or GitHub, la
 
 ## Gameplay
 
+**Every park is customizable.** The *Create your park* screen offers:
+
+- difficulty presets: Sandbox, Easy, Normal, Hard, Nightmare
+- a map seed
+- a climate: temperate, desert, tropical, alpine or autumn
+- starting cash and trees
+- guest arrivals, wealth and price tolerance
+- breakdowns, ride ageing and wages
+- crime, drugs, Pandemonium (off, normal or aggressive), officer deaths, executions, and blood & gore
+- weather, and random events and how often they happen
+
+Most of these can be changed mid-game from ⚙️ **Rules**. The full reference is in [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md).
+
 - **Paths:** click and drag from the entrance to lay walkways. Guests only walk on paths.
 - **Rides:** 7 rides, from Whirly Teacups to the Comet Corkscrew coaster. Each has its own thrill, intensity, nausea, capacity and reliability. A ride needs a path tile next to it so guests can reach it.
 - **Custom coasters:** choose 🎢 Rides → 🛠️ Design your own coaster, place a station, and lay track piece by piece. Pieces include straights, tight and wide turns, slopes, chain lifts, launch boosters, brakes and vertical loops.
@@ -41,6 +54,17 @@ A browser-based 3D theme park management game. Sign in with Google or GitHub, la
   - When the high wears off, about 30% join a crime gang and start committing crimes themselves.
   - Guards and cameras can expose a corrupt vendor. You can replace the vendor from the shop's panel.
 - **Barbed wire perimeter:** costs $15,000 plus upkeep. Once it's up you can lock the exits at any time. Nobody gets in or out, criminals and Pandemonium included, but trapped guests get angry and your rating drops.
+- **Weather and events:** each climate rolls its own daily weather, from sun and fog to rain, snow, heatwaves and lightning storms. Weather changes arrivals, thirst, happiness and breakdowns.
+  - Most days bring a random event, such as a tour bus, sponsor, VIP, health inspector, power outage, viral post, lottery winner, celebrity, pickpocket ring, memorial donation or protest.
+  - **Buzz** (word of mouth) moves your rating and visitor numbers.
+- **Guest types:** families, thrill-seekers, teenagers, seniors, tourists and influencers, each with their own budget, thrill tolerance, pace, appetite, litter habits and taste for souvenirs. Influencers post a review when they leave.
+- **Staff traits:** hires can be Speedy, Lazy, Tough, Fragile, Sharpshooter, Clumsy, Eagle-eyed, Veteran, Rookie or Meticulous. Traits change speed, health, aim, wages and work speed.
+- **Customization:**
+  - Rename and repaint any ride, shop or statue, and choose staff uniform colours.
+  - Pick from 6 path styles.
+  - Custom coasters take a track colour, train colour and 2–7 cars, and can be shared as `RCM1:` design codes and saved to a personal library.
+  - Rides age and can be refurbished.
+- **More to build:** chair swings, a pirate ship, an ice cream cart, coffee kiosk, souvenir shop, umbrella stand, cash machine and information kiosk, plus palms, cacti, cherry blossoms, hedges, boulders, statues and snowmen.
 - **Economy:** you set the entrance fee and the price of every ride and shop. If prices are too high, guests refuse to pay. You pay staff wages and ride upkeep every day.
 - **Guests:** each guest has their own thrill tolerance, budget and needs. Click a guest to see what they're thinking.
 - **💡 Tips:** the in-game Tips panel explains every system, from coaster physics to sentencing, insurance and lockdown.
@@ -88,13 +112,20 @@ public/
   index.html        landing page: sign-in + leaderboard
   game.html         the game
   js/catalog.js     rides, shops, scenery, staff, goals (all balancing lives here)
+  js/options.js     settings schema, difficulty presets, climates, weather, events, guest types, staff traits, path styles
   js/sim.js         deterministic simulation; no DOM, shared with the server
   js/render3d.js    Three.js WebGL renderer: lighting, shadows, instanced crowds, coaster track
   js/render.js      2D isometric canvas fallback when WebGL is unavailable
   js/coaster.js     custom coaster track layout and train physics (shared with the server)
   js/main.js        UI, input, game loop, autosave
-tests/              node:test suites for the sim and the API
+tests/              node:test suites for the sim, coasters, customization and the API
+docs/
+  PERSISTENCE.md    save format, validation, versioning and the proposed production schema
+  CUSTOMIZATION.md  every option and content table (generated: npm run docs)
+scripts/gen-docs.mjs
 ```
+
+Saves are versioned JSON documents (currently v2, with v1 migrated automatically). See [docs/PERSISTENCE.md](docs/PERSISTENCE.md) for the full format and the plan for production infrastructure.
 
 The simulation runs in the browser. On every save, the server parses the park with the same `sim.js` (`deserialize`), validating and clamping all values, and computes the leaderboard numbers from that parsed state. State-changing requests require a custom header as a CSRF defence.
 

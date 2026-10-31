@@ -6,9 +6,11 @@
 
 import * as THREE from '/vendor/three/three.module.min.js';
 import { GRID, RIDES, STALLS, STAFF, PANDEMONIUM } from './catalog.js';
-import { TILE, ENTRANCE, idx, actorPos, cellsOf, rideDef } from './sim.js';
+import { TILE, ENTRANCE, idx, actorPos, cellsOf, rideDef, weatherOf } from './sim.js';
+import { CLIMATES, PATH_STYLES } from './options.js';
 import * as Coaster from './coaster.js';
 
+const INSTANCED = new Set(['tree', 'pine', 'flowers', 'palm', 'cactus', 'cherry', 'rock']);
 const SKIN = [0xf4d1b5, 0xe0ac85, 0xc68863, 0x8d5a3b, 0x5c3a24];
 const MAX_PEOPLE = 1400;
 const hash = (n) => {
@@ -289,29 +291,17 @@ export class Renderer3D {
 
   buildWorld() {
     // Surrounding countryside.
-    const outer = mesh(new THREE.PlaneGeometry(400, 400), M(0x3f7a3c), { cast: false });
-    outer.rotation.x = -Math.PI / 2;
-    outer.position.set(GRID / 2, -0.02, GRID / 2);
-    this.scene.add(outer);
+    this.outer = mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: 0x3f7a3c, roughness: 1 }), { cast: false });
+    this.outer.rotation.x = -Math.PI / 2;
+    this.outer.position.set(GRID / 2, -0.02, GRID / 2);
+    this.scene.add(this.outer);
 
-    // Park lawn with subtle checker texture.
-    const c = document.createElement('canvas');
-    c.width = c.height = GRID * 8;
-    const ctx = c.getContext('2d');
-    for (let y = 0; y < GRID; y++) {
-      for (let x = 0; x < GRID; x++) {
-        const v = hash(x * 131 + y * 71);
-        ctx.fillStyle = (x + y) % 2 ? `rgb(${104 + v * 10},${178 + v * 12},${82 + v * 8})` : `rgb(${98 + v * 10},${170 + v * 12},${78 + v * 8})`;
-        ctx.fillRect(x * 8, y * 8, 8, 8);
-      }
-    }
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.magFilter = THREE.NearestFilter;
-    const lawn = mesh(new THREE.PlaneGeometry(GRID, GRID), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95 }), { cast: false });
-    lawn.rotation.x = -Math.PI / 2;
-    lawn.position.set(GRID / 2, 0, GRID / 2);
-    this.scene.add(lawn);
+    // Park lawn: a checker texture tinted by climate (see applyClimate).
+    this.lawn = mesh(new THREE.PlaneGeometry(GRID, GRID), new THREE.MeshStandardMaterial({ roughness: 0.95 }), { cast: false });
+    this.lawn.rotation.x = -Math.PI / 2;
+    this.lawn.position.set(GRID / 2, 0, GRID / 2);
+    this.scene.add(this.lawn);
+    this.applyClimate('temperate');
 
     // Entrance arch.
     const arch = new THREE.Group();
@@ -334,6 +324,31 @@ export class Renderer3D {
     this.fence.visible = false;
     this.scene.add(this.fence);
     this.buildFence();
+  }
+
+  applyClimate(climate) {
+    if (climate === this.climate) return;
+    this.climate = climate;
+    const C = CLIMATES[climate] || CLIMATES.temperate;
+    const [r, g, b] = C.grass;
+    const c = document.createElement('canvas');
+    c.width = c.height = GRID * 8;
+    const ctx = c.getContext('2d');
+    for (let y = 0; y < GRID; y++) {
+      for (let x = 0; x < GRID; x++) {
+        const v = hash(x * 131 + y * 71), d = (x + y) % 2 ? 0 : -6;
+        ctx.fillStyle = `rgb(${r + d + v * 10},${g + d + v * 12},${b + d + v * 8})`;
+        ctx.fillRect(x * 8, y * 8, 8, 8);
+      }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.NearestFilter;
+    this.lawn.material.map?.dispose();
+    this.lawn.material.map = tex;
+    this.lawn.material.needsUpdate = true;
+    this.outer.material.color.setHex(C.outer);
+    this.scenerySig = null; // foliage colours depend on climate
   }
 
   buildFence() {
@@ -393,11 +408,13 @@ export class Renderer3D {
     // Ground features.
     this.paths = new Batch(s, new THREE.BoxGeometry(1, 0.04, 1), white, GRID * GRID, { cast: false });
     this.paths.mesh.receiveShadow = true;
-    this.pathEdges = new Batch(s, new THREE.BoxGeometry(1, 0.03, 1), new THREE.MeshStandardMaterial({ color: 0x8c7a5e, roughness: 1 }), GRID * GRID, { cast: false });
+    this.pathEdges = new Batch(s, new THREE.BoxGeometry(1, 0.03, 1), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }), GRID * GRID, { cast: false });
     this.litter = new Batch(s, new THREE.BoxGeometry(0.07, 0.02, 0.05), white.clone(), 4000, { cast: false });
     this.stains = new Batch(s, new THREE.CylinderGeometry(1, 1, 0.01, 10), new THREE.MeshStandardMaterial({ color: 0x8a0f12, roughness: 0.3, metalness: 0.1 }), 4000, { cast: false });
     // Scenery instancing.
-    this.trunks = new Batch(s, new THREE.CylinderGeometry(0.05, 0.07, 0.5, 6), M(0x6b4423), 2000);
+    this.trunks = new Batch(s, new THREE.CylinderGeometry(0.05, 0.07, 0.5, 6), white.clone(), 2000);
+    this.fronds = new Batch(s, new THREE.BoxGeometry(0.5, 0.02, 0.12), white.clone(), 3000);
+    this.rocks = new Batch(s, new THREE.DodecahedronGeometry(0.3, 0), white.clone(), 1500);
     this.canopies = new Batch(s, new THREE.IcosahedronGeometry(0.32, 0), white.clone(), 4000);
     this.cones = new Batch(s, new THREE.ConeGeometry(0.3, 0.55, 7), white.clone(), 3000);
     this.blooms = new Batch(s, new THREE.SphereGeometry(0.04, 5, 4), white.clone(), 6000, { cast: false });
@@ -424,6 +441,22 @@ export class Renderer3D {
     this.points = new THREE.Points(pg, new THREE.PointsMaterial({ size: 0.09, vertexColors: true, transparent: true, depthWrite: false }));
     this.points.frustumCulled = false;
     s.add(this.points);
+
+    // Rain and snow: a box of falling points that follows the camera target.
+    const wg = new THREE.BufferGeometry();
+    this.wPos = new Float32Array(2500 * 3);
+    for (let i = 0; i < 2500; i++) {
+      this.wPos[i * 3] = (Math.random() - 0.5) * 40;
+      this.wPos[i * 3 + 1] = Math.random() * 14;
+      this.wPos[i * 3 + 2] = (Math.random() - 0.5) * 40;
+    }
+    wg.setAttribute('position', new THREE.BufferAttribute(this.wPos, 3).setUsage(THREE.DynamicDrawUsage));
+    this.precip = new THREE.Points(wg, new THREE.PointsMaterial({ color: 0xaecbe6, size: 0.06, transparent: true, opacity: 0.7, depthWrite: false }));
+    this.precip.frustumCulled = false;
+    this.precip.visible = false;
+    s.add(this.precip);
+    this.flash = 0;
+    this.umbrellas = new Batch(s, new THREE.ConeGeometry(0.2, 0.08, 8), white.clone(), 600, { cast: false });
 
     // Projectiles.
     this.hotdogs = new Batch(s, new THREE.CapsuleGeometry(0.03, 0.14, 3, 6), M(0xb5532b), 100, { cast: false });
@@ -463,7 +496,10 @@ export class Renderer3D {
   render(park, view, dt) {
     const t = view.time;
     this.raid = !!park.raid;
+    this.applyClimate(park.settings?.climate || 'temperate');
+    this.weather = weatherOf(park);
     this.updateSky(view.dayProgress);
+    this.updatePrecip(dt);
     for (const f of (park._fx || []).splice(0)) this.addFx(f);
 
     this.syncGround(park);
@@ -490,22 +526,47 @@ export class Renderer3D {
 
   updateSky(p) {
     this.dusk = p > 0.75 ? Math.sin(((p - 0.75) / 0.25) * Math.PI) : 0;
-    const d = this.dusk;
-    this.sun.intensity = 2.6 * (1 - d * 0.75);
+    const d = this.dusk, W = this.weather || { sky: 0x9fd3f2, light: 1 };
+    this.flash = Math.max(0, this.flash - 0.016);
+    const flash = this.flash > 0.2 || (this.flash > 0.05 && this.flash < 0.12) ? 2.5 : 0;
+    this.sun.intensity = 2.6 * W.light * (1 - d * 0.75) + flash;
     this.sun.color.setRGB(1, 0.95 - d * 0.35, 0.84 - d * 0.5);
-    this.hemi.intensity = 1.1 * (1 - d * 0.5);
-    const sky = new THREE.Color(0x9fd3f2).lerp(new THREE.Color(0x3b2f6b), d * 0.85);
+    this.hemi.intensity = 1.1 * Math.min(1.2, 0.2 + W.light * 0.8) * (1 - d * 0.5) + flash * 0.6;
+    this.gl.toneMappingExposure = 1.05 * (0.55 + Math.min(1.2, W.light) * 0.45);
+    const sky = new THREE.Color(W.sky).lerp(new THREE.Color(0x3b2f6b), d * 0.85);
     this.scene.background.copy(sky);
     this.scene.fog.color.copy(sky);
+    this.scene.fog.near = W.fog ? 8 : W.precip ? 30 : 60;
+    this.scene.fog.far = W.fog ? 38 : W.precip ? 90 : 140;
     // Sun swings across the sky during the day.
     const a = (p - 0.5) * 1.6;
     this.sun.position.set(GRID / 2 + Math.sin(a) * 30, 40 - Math.abs(a) * 8, GRID / 2 - 14);
   }
 
+  updatePrecip(dt) {
+    const W = this.weather;
+    const kind = W?.precip;
+    this.precip.visible = !!kind;
+    if (!kind) return;
+    const snow = kind === 'snow';
+    this.precip.material.color.setHex(snow ? 0xffffff : 0xaecbe6);
+    this.precip.material.size = snow ? 0.1 : 0.07;
+    this.precip.material.opacity = snow ? 0.95 : 0.85;
+    const fall = (snow ? 1.2 : 9) * dt, drift = snow ? 0.3 * dt : 0.6 * dt;
+    const pos = this.wPos;
+    for (let i = 0; i < pos.length; i += 3) {
+      pos[i + 1] -= fall * (0.7 + (i % 7) * 0.05);
+      pos[i] += drift * Math.sin(i + pos[i + 1]);
+      if (pos[i + 1] < 0) pos[i + 1] += 14;
+    }
+    this.precip.position.set(this.target.x, 0, this.target.z);
+    this.precip.geometry.attributes.position.needsUpdate = true;
+  }
+
   syncGround(park) {
     let sig = 0;
     for (let i = 0; i < park.tiles.length; i++) {
-      sig = (sig * 31 + park.tiles[i] * 7 + park.litter[i] * 3 + park.stains[i]) | 0;
+      sig = (sig * 31 + park.tiles[i] * 7 + park.litter[i] * 3 + park.stains[i] + (park.pathStyles?.[i] || 0) * 13) | 0;
     }
     if (sig === this.groundSig) return;
     this.groundSig = sig;
@@ -515,8 +576,9 @@ export class Renderer3D {
         const i = idx(x, y);
         const tile = park.tiles[i];
         if (tile === TILE.GRASS) continue;
-        this.pathEdges.add(compose(x + 0.5, 0.015, y + 0.5));
-        this.paths.add(compose(x + 0.5, 0.025, y + 0.5, 0, 0.9, 1, 0.9), tile === TILE.ENTRANCE ? 0xd9b26a : 0xd7c4a3);
+        const style = PATH_STYLES[park.pathStyles?.[i] || 0] || PATH_STYLES[0];
+        this.pathEdges.add(compose(x + 0.5, 0.015, y + 0.5), tile === TILE.ENTRANCE ? 0x9c8a6e : style.edge);
+        this.paths.add(compose(x + 0.5, 0.025, y + 0.5, 0, 0.9, 1, 0.9), tile === TILE.ENTRANCE ? 0xd9b26a : style.color);
         for (let k = 0; k < park.litter[i]; k++) {
           this.litter.add(compose(x + 0.2 + hash(i * 7 + k) * 0.6, 0.055, y + 0.2 + hash(i * 13 + k) * 0.6, hash(i + k) * 3), k % 2 ? 0xf4f4f4 : 0xd6463c);
         }
@@ -536,9 +598,10 @@ export class Renderer3D {
   syncObjects(park, t, dt) {
     const seen = new Set();
     for (const o of park.objects) {
-      if (o.kind === 'tree' || o.kind === 'pine' || o.kind === 'flowers') continue; // instanced
+      if (INSTANCED.has(o.kind)) continue; // drawn by drawScenery
       seen.add(o.id);
-      const version = o.kind === 'custom' ? `${o._version}|${o.building}` : o.kind === 'retribution' ? o.pit : o.kind === 'memorial' ? o.graves : 1;
+      const looks = `${o.color || ''}|${o.trainColor || ''}|${o.cars || ''}`;
+      const version = (o.kind === 'custom' ? `${o._version}|${o.building}` : o.kind === 'retribution' ? o.pit : o.kind === 'memorial' ? o.graves : 1) + looks;
       let entry = this.objects.get(o.id);
       if (entry && entry.version !== version) {
         this.scene.remove(entry.group);
@@ -612,8 +675,9 @@ export class Renderer3D {
     return { group, animate, badge, badgeY };
   }
 
-  buildRide(o, def, g) {
+  buildRide(o, baseDef, g) {
     const running = (obj) => obj.phase === 'running';
+    const def = o.color ? { ...baseDef, color: o.color } : baseDef;
     switch (o.kind) {
       case 'teacups': {
         const base = cyl(0.95, 1, 0.12, 0xf7d6e6, 24); base.position.y = 0.06; g.add(base);
@@ -662,7 +726,7 @@ export class Renderer3D {
         }
         const wheel = new THREE.Group(); wheel.position.y = hubY; g.add(wheel);
         for (const sz of [-0.25, 0.25]) {
-          const rim = mesh(new THREE.TorusGeometry(R, 0.035, 6, 40), M(0x5aa9e6)); rim.position.z = sz; wheel.add(rim);
+          const rim = mesh(new THREE.TorusGeometry(R, 0.035, 6, 40), M(new THREE.Color(def.color).getHex())); rim.position.z = sz; wheel.add(rim);
         }
         const cabins = [];
         const colors = [0xe5484d, 0xf2b84b, 0x7bd389, 0x9b6bd6, 0xef6fa8, 0xffffff];
@@ -704,6 +768,49 @@ export class Renderer3D {
             car.position.set(Math.cos(a) * (o.w / 2 - 0.45), 0, Math.sin(a * 1.3) * (o.h / 2 - 0.45));
             car.rotation.y = -a;
           });
+        } };
+      }
+      case 'chairswing': {
+        const base = cyl(0.95, 1, 0.12, 0xdfe8e6, 24); base.position.y = 0.06; g.add(base);
+        const pole = cyl(0.09, 0.12, 2.1, 0x9aa4b0, 10); pole.position.y = 1.1; g.add(pole);
+        const top = new THREE.Group(); top.position.y = 2.15; g.add(top);
+        const canopy = mesh(new THREE.ConeGeometry(0.75, 0.4, 16), new THREE.MeshStandardMaterial({ map: stripeTexture(def.color, '#ffffff', 16), flatShading: true })); canopy.position.y = 0.15; top.add(canopy);
+        const swings = [];
+        for (let k = 0; k < 12; k++) {
+          const arm = new THREE.Group(); arm.rotation.y = (k / 12) * Math.PI * 2; top.add(arm);
+          const hanger = new THREE.Group(); hanger.position.x = 0.62; arm.add(hanger);
+          const chain = cyl(0.006, 0.006, 1.1, 0x666666, 4); chain.position.y = -0.55; hanger.add(chain);
+          const seat = box(0.12, 0.04, 0.12, k % 2 ? 0xffffff : new THREE.Color(def.color).getHex()); seat.position.y = -1.1; hanger.add(seat);
+          swings.push(hanger);
+        }
+        let spin = 0;
+        return { badgeY: 2.8, animate: (obj, t, dt) => {
+          spin = running(obj) ? Math.min(1, spin + dt * 0.5) : Math.max(0, spin - dt * 0.5);
+          top.rotation.y += dt * spin * 2.2;
+          top.position.y = 2.15 + spin * 0.25;
+          swings.forEach((h) => { h.rotation.z = spin * 0.85; });
+        } };
+      }
+      case 'pirateship': {
+        const base = box(o.w - 0.2, 0.1, o.h - 0.2, 0x6b7c8a); base.position.y = 0.05; g.add(base);
+        for (const z of [-0.55, 0.55]) {
+          for (const x of [-1, 1]) {
+            const leg = box(0.08, 2.1, 0.08, 0x5b6b7a); leg.position.set(x * 0.55, 1.0, z); leg.rotation.z = -x * 0.28; g.add(leg);
+          }
+        }
+        const pivot = new THREE.Group(); pivot.position.y = 1.95; g.add(pivot);
+        const ship = new THREE.Group(); ship.position.y = -1.35; pivot.add(ship);
+        const hull = mesh(new THREE.CylinderGeometry(0.42, 0.42, 2.4, 12, 1, false, Math.PI / 2, Math.PI), M(new THREE.Color(def.color).getHex()));
+        hull.rotation.z = Math.PI / 2; ship.add(hull);
+        const deck = box(2.3, 0.04, 0.8, 0xc9a26b); deck.position.y = 0.0; ship.add(deck);
+        const mast = cyl(0.03, 0.03, 0.9, 0x6b4423, 6); mast.position.y = 0.45; ship.add(mast);
+        const sail = box(0.02, 0.5, 0.5, 0xffffff); sail.position.set(0, 0.55, 0); sail.rotation.y = Math.PI / 2; ship.add(sail);
+        for (const x of [-1.2, 1.2]) { const tip = mesh(new THREE.ConeGeometry(0.12, 0.35, 6), M(0xd4af37)); tip.position.set(x, 0.12, 0); tip.rotation.z = x > 0 ? -Math.PI / 2 : Math.PI / 2; ship.add(tip); }
+        const arm = box(0.06, 1.35, 0.06, 0x444444); arm.position.y = -0.67; pivot.add(arm);
+        return { badgeY: 2.8, animate: (obj) => {
+          const p = running(obj) ? 1 - obj.timer / def.duration : 0;
+          const amp = Math.sin(Math.min(1, p) * Math.PI) * 1.15;
+          pivot.rotation.z = Math.sin(p * Math.PI * 10) * amp;
         } };
       }
       case 'droptower': {
@@ -870,7 +977,8 @@ export class Renderer3D {
       return p.chain ? 0x333333 : p.boost ? 0xffc400 : p.brake ? 0xd62828 : p.station ? 0x777777 : 0x5b4a3a;
     };
     const bankArr = design?.bank;
-    this.addTrack(g, curve, o.building ? 0x7fb3ff : 0x3a86ff, 0xb0b8c4, false, {
+    const railColor = o.color ? new THREE.Color(o.color).getHex() : 0x3a86ff;
+    this.addTrack(g, curve, o.building ? new THREE.Color(railColor).lerp(new THREE.Color(0xffffff), 0.4).getHex() : railColor, 0xb0b8c4, false, {
       segments: Math.min(1600, Math.max(60, n * 2)),
       tieColor,
       upAt: (u) => { const p = at(u); return new THREE.Vector3(p.up[0], p.up[1], p.up[2]); },
@@ -878,7 +986,7 @@ export class Renderer3D {
       supportAt: (u) => !at(u).loop || at(u).y < 0.6,
     });
     // Loop pieces need a support under the bottom only; add a gantry.
-    const cars = this.makeTrain(g, 4, 0xe5484d);
+    const cars = this.makeTrain(g, o.cars || 4, o.trainColor ? new THREE.Color(o.trainColor).getHex() : 0xe5484d);
     // Arc length lookup for positioning cars.
     const arc = new Float64Array(n + 1);
     for (let i = 1; i <= n; i++) {
@@ -930,7 +1038,8 @@ export class Renderer3D {
     };
   }
 
-  buildStall(o, def, g) {
+  buildStall(o, baseDef, g) {
+    const def = o.color ? { ...baseDef, color: o.color } : baseDef;
     const restroom = def.sells === 'restroom' || def.sells === 'firstaid';
     const body = box(0.72, 0.62, 0.72, restroom ? 0xdfe6ec : 0xf4efe6); body.position.y = 0.31; g.add(body);
     const counter = box(0.76, 0.06, 0.2, 0x8b5a2b); counter.position.set(0, 0.42, 0.38); g.add(counter);
@@ -979,6 +1088,27 @@ export class Renderer3D {
         const lens = cyl(0.03, 0.03, 0.04, 0x20252b, 8); lens.rotation.x = Math.PI / 2; lens.position.z = 0.17; head.add(lens);
         const led = sphere(0.015, 0xff3b30, { emissive: 0xff0000 }); led.position.set(0.04, 0.05, 0.1); head.add(led);
         return (obj, t) => { head.rotation.y = Math.sin(t * 0.8 + o.id) * 0.9; led.visible = Math.floor(t * 2) % 2 === 0; };
+      }
+      case 'hedge': {
+        const h = box(0.92, 0.42, 0.92, 0x2f6b34); h.position.y = 0.21; g.add(h);
+        const top = box(0.86, 0.06, 0.86, 0x3a8040); top.position.y = 0.44; g.add(top);
+        return null;
+      }
+      case 'statue': {
+        const plinth = box(0.5, 0.35, 0.5, 0xb8b2a7); plinth.position.y = 0.17; g.add(plinth);
+        const col = o.color ? new THREE.Color(o.color).getHex() : 0xc9a24a;
+        const body = cyl(0.09, 0.12, 0.5, col, 8, { metalness: 0.5, roughness: 0.35 }); body.position.y = 0.6; g.add(body);
+        const head = sphere(0.09, col, { metalness: 0.5, roughness: 0.35 }); head.position.y = 0.93; g.add(head);
+        const arm = box(0.06, 0.32, 0.06, col, { metalness: 0.5, roughness: 0.35 }); arm.position.set(0.13, 0.85, 0); arm.rotation.z = -0.6; g.add(arm);
+        return null;
+      }
+      case 'snowman': {
+        const b1 = sphere(0.2, 0xffffff); b1.position.y = 0.2; g.add(b1);
+        const b2 = sphere(0.14, 0xffffff); b2.position.y = 0.5; g.add(b2);
+        const b3 = sphere(0.1, 0xffffff); b3.position.y = 0.72; g.add(b3);
+        const nose = mesh(new THREE.ConeGeometry(0.02, 0.1, 6), M(0xff8a3d)); nose.rotation.x = Math.PI / 2; nose.position.set(0, 0.72, 0.13); g.add(nose);
+        const hat = cyl(0.07, 0.07, 0.12, 0x222222); hat.position.y = 0.86; g.add(hat);
+        return null;
       }
       default: {
         const b = box(0.5, 0.3, 0.5, 0x999999); b.position.y = 0.15; g.add(b);
@@ -1164,22 +1294,40 @@ export class Renderer3D {
 
   drawScenery(park) {
     let sig = 0;
-    for (const o of park.objects) if (o.kind === 'tree' || o.kind === 'pine' || o.kind === 'flowers') sig = (sig * 31 + o.id) | 0;
+    for (const o of park.objects) if (INSTANCED.has(o.kind)) sig = (sig * 31 + o.id) | 0;
     if (sig === this.scenerySig) return;
     this.scenerySig = sig;
-    for (const b of [this.trunks, this.canopies, this.cones, this.blooms, this.beds]) b.begin();
-    const greens = [0x2f7d32, 0x3a8f3c, 0x358a37, 0x45a047];
+    for (const b of [this.trunks, this.canopies, this.cones, this.blooms, this.beds, this.fronds, this.rocks]) b.begin();
+    const greens = CLIMATES[this.climate]?.foliage || [0x2f7d32, 0x3a8f3c, 0x358a37, 0x45a047];
     const blooms = [0xff5d8f, 0xffd23f, 0xffffff, 0xb07cff, 0xff8a3d];
     for (const o of park.objects) {
       const x = o.x + 0.5, z = o.y + 0.5, r = hash(o.id), s = 0.85 + r * 0.4;
       if (o.kind === 'tree') {
-        this.trunks.add(compose(x, 0.25 * s, z, 0, s, s, s));
+        this.trunks.add(compose(x, 0.25 * s, z, 0, s, s, s), 0x6b4423);
         for (let k = 0; k < 3; k++) {
           const a = r * 6 + k * 2.1;
           this.canopies.add(compose(x + Math.cos(a) * 0.12 * s, (0.62 + k * 0.1) * s, z + Math.sin(a) * 0.12 * s, a, s * (1 - k * 0.15), s * (1 - k * 0.15), s * (1 - k * 0.15)), greens[(o.id + k) % 4]);
         }
+      } else if (o.kind === 'palm') {
+        this.trunks.add(compose(x, 0.55 * s, z, 0, s * 0.7, s * 2.2, s * 0.7), 0x8b6b3e);
+        for (let k = 0; k < 6; k++) {
+          const a = r * 6 + (k / 6) * Math.PI * 2;
+          this.fronds.add(compose(x + Math.cos(a) * 0.22 * s, 1.12 * s, z + Math.sin(a) * 0.22 * s, -a, s, s, s, 0, 0.5), k % 2 ? 0x2f8f3a : 0x3aa046);
+        }
+      } else if (o.kind === 'cactus') {
+        this.cones.add(compose(x, 0.32 * s, z, 0, s * 0.35, s * 1.3, s * 0.35), 0x4f8a3a);
+        this.cones.add(compose(x + 0.13 * s, 0.38 * s, z, 0, s * 0.18, s * 0.6, s * 0.18), 0x5a9a42);
+        this.cones.add(compose(x - 0.12 * s, 0.3 * s, z, 0, s * 0.16, s * 0.5, s * 0.16), 0x5a9a42);
+      } else if (o.kind === 'cherry') {
+        this.trunks.add(compose(x, 0.25 * s, z, 0, s, s, s), 0x5a3a2a);
+        for (let k = 0; k < 4; k++) {
+          const a = r * 6 + k * 1.6;
+          this.canopies.add(compose(x + Math.cos(a) * 0.14 * s, (0.6 + k * 0.08) * s, z + Math.sin(a) * 0.14 * s, a, s * 0.85, s * 0.8, s * 0.85), k % 2 ? 0xf7b6d2 : 0xffd1e3);
+        }
+      } else if (o.kind === 'rock') {
+        this.rocks.add(compose(x, 0.12 * s, z, r * 6, s * 0.9, s * 0.6, s * 0.8), 0x8a8580);
       } else if (o.kind === 'pine') {
-        this.trunks.add(compose(x, 0.15 * s, z, 0, s * 0.8, s * 0.6, s * 0.8));
+        this.trunks.add(compose(x, 0.15 * s, z, 0, s * 0.8, s * 0.6, s * 0.8), 0x5a3a1e);
         for (let k = 0; k < 3; k++) this.cones.add(compose(x, (0.45 + k * 0.28) * s, z, r * 5, s * (1 - k * 0.22), s * 0.9, s * (1 - k * 0.22)), k % 2 ? 0x2b6b3a : 0x24603a);
       } else {
         this.beds.add(compose(x, 0.03, z));
@@ -1188,7 +1336,7 @@ export class Renderer3D {
         }
       }
     }
-    for (const b of [this.trunks, this.canopies, this.cones, this.blooms, this.beds]) b.end();
+    for (const b of [this.trunks, this.canopies, this.cones, this.blooms, this.beds, this.fronds, this.rocks]) b.end();
   }
 
   // ------------------------------------------------------------------
@@ -1196,7 +1344,7 @@ export class Renderer3D {
   // ------------------------------------------------------------------
 
   drawPeople(park, t, view) {
-    for (const b of [this.legs, this.bodies, this.heads, this.hats, this.guns, this.pandaWhite, this.pandaBlack, this.lootBags, this.markers, this.bars, this.orbs]) b.begin();
+    for (const b of [this.legs, this.bodies, this.heads, this.hats, this.guns, this.pandaWhite, this.pandaBlack, this.lootBags, this.markers, this.bars, this.orbs, this.umbrellas]) b.begin();
     this.ring.visible = false;
     for (const g of park.guests) {
       if (g.state === 'ride') continue;
@@ -1210,6 +1358,7 @@ export class Renderer3D {
       if (view.selected === g.id) { this.ring.visible = true; this.ring.position.set(x, 0.06, z); }
       if (g.crime === 'panda') { this.drawPanda(g, x, z, heading, t); continue; }
       this.person(x, z, heading, g.state === 'walk' ? t : 0, g.id, g.shirt, { sitting: g.state === 'sit' });
+      if (g.umbrella && this.weather?.precip) this.umbrellas.add(compose(x, 0.62, z), [0xe5484d, 0x3a86ff, 0xf2b84b, 0x7bd389][g.id % 4]);
       const top = 0.55;
       if (g.crime && g.spotted) this.markers.add(compose(x, top + 0.06 + Math.sin(t * 5) * 0.02, z, 0, 1, -1, 1), 0xe5484d);
       else if (g.high > 0) {
@@ -1225,7 +1374,7 @@ export class Renderer3D {
     for (const s of park.staff) {
       const p = actorPos(s);
       const heading = Math.atan2(s.nx - s.x, s.ny - s.y) || 0;
-      const col = STAFF[s.role].color;
+      const col = park.uniforms?.[s.role] || STAFF[s.role].color;
       if (view.selected === s.id) { this.ring.visible = true; this.ring.position.set(p.x, 0.06, p.y); }
       const down = s.down > 0;
       this.person(p.x, p.y, heading, s.busy > 0 || down ? 0 : t, s.id, col, { hat: s.role === 'squad' ? 0xffd23f : new THREE.Color(col).multiplyScalar(0.6).getHex(), lying: down });
@@ -1239,7 +1388,7 @@ export class Renderer3D {
         this.healthBar(p.x, 0.62, p.y, s.hp / s.maxHp, 0x4dabf7);
       }
     }
-    for (const b of [this.legs, this.bodies, this.heads, this.hats, this.guns, this.pandaWhite, this.pandaBlack, this.lootBags, this.markers, this.bars, this.orbs]) b.end();
+    for (const b of [this.legs, this.bodies, this.heads, this.hats, this.guns, this.pandaWhite, this.pandaBlack, this.lootBags, this.markers, this.bars, this.orbs, this.umbrellas]) b.end();
   }
 
   healthBar(x, y, z, frac, color) {
@@ -1374,6 +1523,7 @@ export class Renderer3D {
 
   addFx(f) {
     if (f.type === 'shot' || f.type === 'bamboo') { this.shots.push({ ...f, age: 0 }); return; }
+    if (f.type === 'lightning') { this.flash = 0.35; return; }
     const rnd = Math.random;
     const burst = (n, make) => { for (let i = 0; i < n && this.particles.length < 2000; i++) this.particles.push(make()); };
     if (f.type === 'blood') {

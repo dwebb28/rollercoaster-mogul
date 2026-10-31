@@ -15,6 +15,7 @@
     <div class="stat" title="Guests in park"><span class="label">Guests</span><span id="s-guests">0</span></div>
     <div class="stat" title="Park rating (0–999)"><span class="label">Rating</span><span id="s-rating">0</span><span class="meter"><span id="s-rating-bar"></span></span></div>
     <div class="stat" title="Safety (0–100): drops with each crime"><span class="label">Safety</span><span id="s-safety">100</span><span class="meter"><span id="s-safety-bar"></span></span></div>
+    <div class="stat" title="Today's weather"><span class="label">Weather</span><span id="s-weather">☀️</span></div>
     <div class="stat" title="Day"><span class="label">Day</span><span id="s-day">1</span><span class="meter"><span id="s-day-bar"></span></span></div>
     <div class="speed" role="group" aria-label="Game speed">
       <button data-speed="0" title="Pause (Space)">❚❚</button>
@@ -48,6 +49,7 @@
     <button data-panel="wanted" title="Wanted list & gangs">🚨<span>Wanted</span></button>
     <button data-panel="park" title="Park & finances">📊<span>Park</span></button>
     <button data-panel="leaderboard" title="Leaderboard">🏆<span>Ranks</span></button>
+    <button data-panel="rules" title="Rules & settings">⚙️<span>Rules</span></button>
     <button data-panel="tips" title="Player tips">💡<span>Tips</span></button>
   </nav>
 
@@ -58,6 +60,9 @@
   </aside>
   <div id="thoughts" class="thoughts" aria-live="polite"></div>
   <div id="raid-banner" class="raid-banner" hidden></div>
+ <div id="setup-modal" class="modal" hidden role="dialog" aria-modal="true" aria-label="New park setup">
+    <div id="setup-card" class="modal-card setup"></div>
+  </div>
   <div id="custody-modal" class="modal" hidden role="dialog" aria-modal="true" aria-label="Sentencing">
     <div id="custody-card" class="modal-card"></div>
   </div>

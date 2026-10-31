@@ -73,3 +73,17 @@ test('logout ends the session', async () => {
   await fetch(`${base}/auth/logout`, { method: 'POST', headers: { ...H, cookie } });
   assert.equal((await fetch(`${base}/api/me`, { headers: { cookie } })).status, 401);
 });
+
+test('the server stores the canonical, validated save', async () => {
+  const cookie = await login('Casey');
+  const data = Sim.serialize(Sim.createPark('Canon', 8));
+  data.junk = '<script>alert(1)</script>';
+  data.cash = 1e15; // clamped on the way in
+  data.settings.crimeRate = 99;
+  await fetch(`${base}/api/park`, { method: 'PUT', headers: { ...H, cookie }, body: JSON.stringify(data) });
+  const stored = await (await fetch(`${base}/api/park`, { headers: { cookie } })).json();
+  assert.equal(stored.junk, undefined);
+  assert.equal(stored.cash, 1e10);
+  assert.equal(stored.settings.crimeRate, 3);
+  assert.equal(stored.version, Sim.SAVE_VERSION);
+});

@@ -42,6 +42,16 @@ export const RIDES = {
     excitement: 9, intensity: 9, nausea: 7, price: 8, upkeep: 110, reliability: 0.96,
     color: '#e5484d', coaster: true, loop: true,
   },
+  chairswing: {
+    name: 'Sky Swinger', w: 2, h: 2, cost: 2600, capacity: 12, duration: 8,
+    excitement: 5, intensity: 4, nausea: 4, price: 3, upkeep: 25, reliability: 0.98,
+    color: '#2bb3a3',
+  },
+  pirateship: {
+    name: 'Buccaneer Swing', w: 3, h: 2, cost: 3800, capacity: 20, duration: 10,
+    excitement: 5, intensity: 5, nausea: 6, price: 3, upkeep: 30, reliability: 0.98,
+    color: '#8b5a2b',
+  },
 };
 
 /** Base definition for player-designed coasters; stats come from physics. */
@@ -58,7 +68,16 @@ export const STALLS = {
   soda: { name: 'Fizz Pop', w: 1, h: 1, cost: 350, sells: 'drink', price: 3, unitCost: 0.7, upkeep: 8, icon: '🥤', color: '#4aa3df' },
   restroom: { name: 'Restrooms', w: 1, h: 1, cost: 600, sells: 'restroom', price: 0, unitCost: 0, upkeep: 12, icon: '🚻', color: '#8fa3b8' },
   firstaid: { name: 'First Aid Post', w: 1, h: 1, cost: 700, sells: 'firstaid', price: 0, unitCost: 0, upkeep: 20, icon: '⛑️', color: '#d64545' },
+  icecream: { name: 'Ice Cream Cart', w: 1, h: 1, cost: 450, sells: 'food', snack: true, price: 3, unitCost: 0.8, upkeep: 9, icon: '🍦', color: '#f7a8c8' },
+  coffee: { name: 'Coffee Kiosk', w: 1, h: 1, cost: 500, sells: 'drink', energy: 30, price: 3, unitCost: 0.6, upkeep: 9, icon: '☕', color: '#6f4e37' },
+  souvenir: { name: 'Souvenir Shop', w: 1, h: 1, cost: 900, sells: 'souvenir', price: 8, unitCost: 3, upkeep: 15, icon: '🎁', color: '#9b6bd6' },
+  umbrella: { name: 'Umbrella Stand', w: 1, h: 1, cost: 400, sells: 'umbrella', price: 6, unitCost: 2, upkeep: 8, icon: '☂️', color: '#3a86ff' },
+  atm: { name: 'Cash Machine', w: 1, h: 1, cost: 1200, sells: 'atm', price: 2, unitCost: 0, upkeep: 10, icon: '🏧', color: '#2bb3a3' },
+  info: { name: 'Information Kiosk', w: 1, h: 1, cost: 600, sells: 'info', price: 1, unitCost: 0.2, upkeep: 10, icon: 'ℹ️', color: '#3a86ff' },
 };
+
+/** Base value guests place on each kind of purchase (before tolerance & thrift). */
+export const SHOP_VALUE = { food: 7, drink: 4.5, restroom: 2, firstaid: 2, souvenir: 12, umbrella: 9, atm: 3, info: 2 };
 
 export const SCENERY = {
   tree: { name: 'Oak Tree', w: 1, h: 1, cost: 25, beauty: 2 },
@@ -69,7 +88,21 @@ export const SCENERY = {
   bin: { name: 'Litter Bin', w: 1, h: 1, cost: 40, beauty: 0, bin: true },
   lamp: { name: 'Lamp Post', w: 1, h: 1, cost: 60, beauty: 1, lamp: true },
   camera: { name: 'Security Camera', w: 1, h: 1, cost: 300, beauty: 0, camera: true },
+  palm: { name: 'Palm Tree', w: 1, h: 1, cost: 40, beauty: 3, plant: true },
+  cactus: { name: 'Cactus', w: 1, h: 1, cost: 30, beauty: 2, plant: true },
+  cherry: { name: 'Cherry Blossom', w: 1, h: 1, cost: 60, beauty: 4, plant: true },
+  hedge: { name: 'Hedge', w: 1, h: 1, cost: 30, beauty: 2, plant: true },
+  rock: { name: 'Boulder', w: 1, h: 1, cost: 30, beauty: 1 },
+  statue: { name: 'Statue', w: 1, h: 1, cost: 350, beauty: 6 },
+  snowman: { name: 'Snowman', w: 1, h: 1, cost: 40, beauty: 3 },
 };
+SCENERY.tree.plant = SCENERY.pine.plant = SCENERY.flowers.plant = true;
+
+/** Ride ageing: reliability lost per day, and refurbishment cost as a share of build cost. */
+export const AGEING = { perDay: 0.0012, maxLoss: 0.06, refurbishShare: 0.3 };
+
+/** Shared coaster design codes are prefixed with this. */
+export const DESIGN_CODE_PREFIX = 'RCM1:';
 
 export const STAFF = {
   janitor: { name: 'Janitor', wage: 30, color: '#3fa34d', hp: 3 },
