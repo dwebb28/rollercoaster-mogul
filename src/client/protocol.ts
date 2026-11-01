@@ -21,6 +21,8 @@ export type ToWorker =
   | { type: 'speed'; speed: number };
 
 export type FromWorker =
+  /** Sent once the worker's modules (including the WASM core) have loaded. */
+  | { type: 'ready' }
   | {
     type: 'snapshot';
     /** The park with transient lookups intact (except _guestById, rebuilt by the client). */

@@ -210,3 +210,4 @@ scope.onmessage = (e: MessageEvent<ToWorker>) => {
 };
 
 setInterval(tick, TICK_MS);
+post({ type: 'ready' });

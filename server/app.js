@@ -21,7 +21,7 @@ export function createApp(config) {
   app.use((_req, res, next) => {
     res.set({
       'Content-Security-Policy':
-        "default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'",
+        "default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'",
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'same-origin',
     });

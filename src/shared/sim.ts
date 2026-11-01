@@ -7,6 +7,7 @@ import {
   CUSTOM_COASTER, SHOP_VALUE, AGEING, DESIGN_CODE_PREFIX,
 } from './catalog.ts';
 import * as Coaster from './coaster.ts';
+import { core, syncTiles, setTile } from './core.ts';
 import {
   sanitizeSettings, settingDef, CLIMATES, WEATHER, EVENTS, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES,
   isHexColor, weighted,
@@ -623,6 +624,7 @@ export function buildPath(park: Park, x: number, y: number, style = 0) {
   if (park.cash < PATH_COST) return { ok: false, reason: 'Not enough cash', cash: true };
   spend(park, PATH_COST, 'construction');
   park.tiles[i] = TILE.PATH;
+  setTile(park, i, TILE.PATH);
   park.pathStyles[i] = style;
   refreshAccess(park);
   return { ok: true };
@@ -640,6 +642,7 @@ export function bulldoze(park: Park, x: number, y: number) {
   if (park.tiles[i] === TILE.ENTRANCE) return { ok: false, reason: "You can't remove the entrance" };
   if (park.tiles[i] === TILE.PATH) {
     park.tiles[i] = TILE.GRASS;
+    setTile(park, i, TILE.GRASS);
     park.litter[i] = 0;
     refreshAccess(park);
     return { ok: true, refund: 0 };
@@ -759,29 +762,15 @@ function spend(park: Park, amount: number, category: LedgerCategory) {
 // Pathfinding
 // ---------------------------------------------------------------------------
 
+/**
+ * Breadth-first search over the path network, run in the WASM core.
+ * The returned arrays are views into core memory, overwritten by the next
+ * call: use them before calling bfs again (every caller does).
+ */
 function bfs(park: Park, start: number, allowEntrance = false) {
-  const n = GRID * GRID;
-  const dist = new Int16Array(n).fill(-1);
-  const prev = new Int32Array(n).fill(-1);
-  const queue = new Int32Array(n);
-  let head = 0, tail = 0;
-  queue[tail++] = start;
-  dist[start] = 0;
-  while (head < tail) {
-    const c = queue[head++];
-    const cx = c % GRID, cy = (c / GRID) | 0;
-    for (const [dx, dy] of DIRS) {
-      const x = cx + dx, y = cy + dy;
-      if (!inBounds(x, y)) continue;
-      const i = idx(x, y);
-      if (dist[i] >= 0 || !walkable(park, i)) continue;
-      if (!allowEntrance && park.tiles[i] === TILE.ENTRANCE) continue;
-      dist[i] = dist[c] + 1;
-      prev[i] = c;
-      queue[tail++] = i;
-    }
-  }
-  return { dist, prev };
+  syncTiles(park);
+  core.bfs(start, allowEntrance);
+  return core;
 }
 
 function traceRoute(prev: Int32Array, start: number, goal: number) {
@@ -805,6 +794,7 @@ function nearestAccess(obj: ParkObject, dist: Int16Array) {
 // ---------------------------------------------------------------------------
 
 export function step(park: Park, dt: number) {
+  syncTiles(park, true); // tiles may have been edited directly since the last step
   const prevDay = day(park);
   park.time += dt;
 

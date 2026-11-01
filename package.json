@@ -17,7 +17,9 @@
     "pretest": "npm run typecheck",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.js",
     "docs": "node --disable-warning=ExperimentalWarning scripts/gen-docs.mjs",
-    "bench": "node --disable-warning=ExperimentalWarning scripts/bench.mjs"
+    "bench": "node --disable-warning=ExperimentalWarning scripts/bench.mjs",
+    "build:wasm": "cargo build --release --target wasm32-unknown-unknown --manifest-path core/Cargo.toml && cp core/target/wasm32-unknown-unknown/release/mogul_core.wasm public/wasm/",
+    "test:core": "cargo test --manifest-path core/Cargo.toml"
   },
   "license": "MIT",
   "dependencies": {

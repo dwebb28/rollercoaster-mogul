@@ -74,7 +74,7 @@ Most of these can be changed mid-game from ⚙️ **Rules**. The full reference 
 
 ## Running locally
 
-Requires **Node.js 22.18+**. The app uses the built-in `node:sqlite`, so there are no native builds. Node also runs the shared TypeScript directly, so the server and tests need no build step.
+Requires **Node.js 22.18+**. The app uses the built-in `node:sqlite`, so there are no native builds. Node also runs the shared TypeScript directly, so the server and tests need no build step. The simulation's hot paths run in a Rust/WebAssembly core. The compiled `.wasm` is committed, so Rust is only needed to change it (see [docs/WASM.md](docs/WASM.md)).
 
 ```bash
 npm install
@@ -82,6 +82,8 @@ npm start          # builds, then serves http://localhost:3000
 npm run dev        # rebuilds and restarts on changes
 npm test           # type-checks, then runs the simulation + API tests
 npm run typecheck  # strict TypeScript check only
+npm run bench      # simulation and snapshot timings (--profile for hot functions)
+npm run build:wasm # rebuild the Rust core (needs rustup target wasm32-unknown-unknown)
 ```
 
 Outside production, a **dev login** lets you play right away without any OAuth setup.
@@ -110,12 +112,15 @@ server/
   auth.js           Passport OAuth strategies (Google, GitHub) + dev login
   db.js             SQLite schema & queries (users, parks, sessions)
   session-store.js  express-session store on SQLite
+core/               Rust simulation core, compiled to public/wasm/mogul_core.wasm (docs/WASM.md)
 src/shared/         TypeScript shared by browser, server and tests (strict mode)
   types.ts          domain types; these interfaces are the save format
   catalog.ts        rides, shops, scenery, staff, goals (all balancing lives here)
   options.ts        settings schema, difficulty presets, climates, weather, events, guest types, staff traits, path styles
   sim.ts            deterministic simulation; no DOM
   coaster.ts        custom coaster track layout and train physics
+  core.ts           loads the WASM core (pathfinding today; more systems moving over)
+  stress.ts         generated large park for benchmarks and the in-game stress test
 src/client/         TypeScript that only runs in the browser
   sim.worker.ts     Web Worker that owns the park and runs the simulation off the main thread
   simclient.ts      page-side handle: a read-only park mirror plus act() for changes
@@ -130,6 +135,7 @@ public/
 tests/              node:test suites for the sim, coasters, customization and the API
 docs/
   PERSISTENCE.md    save format, validation, versioning and the proposed production schema
+  WASM.md           the Rust/WASM core: ABI rules, determinism, migration order
   CUSTOMIZATION.md  every option and content table (generated: npm run docs)
 scripts/gen-docs.mjs
 ```

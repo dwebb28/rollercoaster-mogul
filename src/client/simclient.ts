@@ -61,7 +61,23 @@ export class SimClient {
     this.worker.onerror = (e) => console.error('Simulation worker error', e.message);
   }
 
-  private send(msg: ToWorker) { this.worker.postMessage(msg); }
+  /**
+   * Messages wait here until the worker says it's ready. The worker's module
+   * graph awaits the WASM core, and a module worker drops messages that
+   * arrive before its onmessage handler exists.
+   */
+  private outbox: ToWorker[] | null = [];
+
+  private send(msg: ToWorker) {
+    if (this.outbox) this.outbox.push(msg);
+    else this.worker.postMessage(msg);
+  }
+
+  private flushOutbox() {
+    const queued = this.outbox ?? [];
+    this.outbox = null;
+    for (const m of queued) this.worker.postMessage(m);
+  }
 
   private request<T>(msg: DistributiveOmit<Extract<ToWorker, { id: number }>, 'id'>): Promise<T> {
     const id = this.nextId++;
@@ -86,6 +102,7 @@ export class SimClient {
   }
 
   private receive(msg: FromWorker, decodeMs: number) {
+    if (msg.type === 'ready') { this.flushOutbox(); return; }
     if (msg.type === 'snapshot') {
       const park = msg.park;
       park._guestById = new Map(park.guests.map((g) => [g.id, g]));
