@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { openDatabase } from './db.js';
 import { SqliteSessionStore } from './session-store.js';
 import { setupAuth } from './auth.js';
-import { deserialize, serialize, parkSummary } from '../public/js/sim.js';
+import { deserialize, serialize, parkSummary } from '../src/shared/sim.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MAX_PARK_BYTES = 2 * 1024 * 1024;

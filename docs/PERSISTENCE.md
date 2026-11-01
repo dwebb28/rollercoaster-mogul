@@ -24,12 +24,16 @@ For the meaning of each option, see [CUSTOMIZATION.md](CUSTOMIZATION.md), which 
 
 1. The browser runs the simulation. It autosaves every 45 seconds while there are changes, and also when the tab is hidden (`main.js` → `save()`).
 2. `PUT /api/park` sends `serialize(park)`.
-3. The server runs `deserialize()` from the shared `public/js/sim.js`. This rejects malformed data and clamps every number to its allowed range. It then stores the canonical `serialize()` of the result, never the raw upload, and copies the leaderboard numbers out of the parsed park.
+3. The server runs `deserialize()` from the shared `src/shared/sim.ts`. This rejects malformed data and clamps every number to its allowed range. It then stores the canonical `serialize()` of the result, never the raw upload, and copies the leaderboard numbers out of the parsed park.
 4. `GET /api/park` returns the stored document. The browser runs it through `deserialize()` again on load.
 
 **Size.** A 24-guest park is about 35 KB of JSON. Guests make up most of it, at about 600 bytes each, so a full park of 600 guests is roughly 400 KB. The three per-tile layers (`tiles`, `litter`, `stains`, plus `pathStyles`) are 1,600-character strings, about 6.4 KB together. JSON compresses 5–10× with gzip.
 
 ## The park document (version 2)
+
+The authoritative definition is the `Park` interface and its parts in
+[`src/shared/types.ts`](../src/shared/types.ts). The TypeScript compiler checks every read and write
+of the save against it. The tables below explain each field.
 
 Fields are grouped by how they should be treated when this moves to real infrastructure:
 
@@ -45,7 +49,7 @@ Fields are grouped by how they should be treated when this moves to real infrast
 | `version` | int | config | `2` today. `1` is accepted and migrated (see below). Anything else is rejected. |
 | `name` | string ≤ 40 | config | Park name. |
 | `seed` | uint32 | config | The seed the park was created from. It produced the starting map and luck. |
-| `settings` | object | config | Every key in `SETTINGS_SCHEMA` (`options.js`), validated by `sanitizeSettings()`. Unknown keys are dropped and missing ones defaulted. |
+| `settings` | object | config | Every key in `SETTINGS_SCHEMA` (`src/shared/options.ts`), validated by `sanitizeSettings()`. Unknown keys are dropped and missing ones defaulted. |
 | `uniforms` | `{ role: "#rrggbb" }` | config | Staff uniform colours. Only known roles and valid hex colours are kept. |
 | `entranceFee` | int 0–100 | config | |
 | `open` | bool | config | Park open to new guests. |
@@ -109,7 +113,7 @@ Every guest is restored walking. Their goal, queue and route are recomputed.
 
 ## Versioning and migrations
 
-- `SAVE_VERSION` in `sim.js` is the current format (2).
+- `SAVE_VERSION` in `src/shared/sim.ts` is the current format (2).
 - `deserialize()` accepts the current version and every older one it knows how to upgrade. Anything else is rejected.
 - **v1 → v2** (this change) adds `settings`, `seed`, `weather`, `buzz`, `effects`, `eventLog`, `pathStyles`, `uniforms`, object `name`/`color`/`builtDay`, coaster `cars`/`trainColor`, guest `type` and items, and staff `traits`. All are optional on input. A v1 save loads with the Normal preset, sunny weather, sandstone paths and no traits. It's written back as v2 on the next save.
 

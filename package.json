@@ -6,13 +6,17 @@
   "private": true,
   "main": "server/index.js",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.18"
   },
   "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc --noEmit -p .",
+    "prestart": "npm run build",
     "start": "node --disable-warning=ExperimentalWarning server/index.js",
-    "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
+    "dev": "npm run build && (tsc -p . --watch --preserveWatchOutput & node --disable-warning=ExperimentalWarning --watch server/index.js)",
+    "pretest": "npm run typecheck",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.js",
-    "docs": "node scripts/gen-docs.mjs"
+    "docs": "node --disable-warning=ExperimentalWarning scripts/gen-docs.mjs"
   },
   "license": "MIT",
   "dependencies": {
@@ -22,5 +26,8 @@
     "passport-github2": "^0.1.12",
     "passport-google-oauth20": "^2.0.0",
     "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }

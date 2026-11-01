@@ -4,14 +4,76 @@
 // Units: 1 tile = 1 world unit = 4 m. Track height is measured in "steps"
 // of a quarter world unit (1 m).
 
-export const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+import type { CoasterStart, CoasterDesign, PieceType } from './types.ts';
+
+export interface PieceDef {
+  name: string;
+  cost: number;
+  /** Tiles travelled forward. */
+  len: number;
+  /** Height change in steps (1 m each). */
+  dh: number;
+  icon: string;
+  station?: boolean;
+  /** −1 left, +1 right. */
+  turn?: -1 | 1;
+  wide?: boolean;
+  chain?: boolean;
+  boost?: boolean;
+  brake?: boolean;
+  loop?: boolean;
+}
+
+/** One placed piece: its tiles and heights. */
+export interface Segment {
+  type: PieceType;
+  x: number;
+  y: number;
+  dirIn: number;
+  dirOut: number;
+  h0: number;
+  h1: number;
+  cells: { x: number; y: number }[];
+}
+
+/** Where the next piece would start. */
+export interface Cursor {
+  x: number;
+  y: number;
+  dir: number;
+  h: number;
+}
+
+export interface Layout {
+  segs: Segment[];
+  cursor: Cursor;
+  error?: string;
+}
+
+/** A point on the track centreline (world units) with the rider's "up". */
+export interface TrackSample {
+  x: number;
+  y: number;
+  z: number;
+  up: Vec3;
+  seg: number;
+  chain: boolean;
+  boost: boolean;
+  brake: boolean;
+  station: boolean;
+  loop: boolean;
+}
+
+type Vec3 = [number, number, number];
+
+export const DIRS: [number, number][] = [[1, 0], [0, 1], [-1, 0], [0, -1]];
 export const STEP = 0.25; // world units per height step
 export const METERS = 4; // meters per world unit
 export const MAX_STEPS = 48; // 48 m tall
 export const CROSS_CLEARANCE = 4; // height steps needed to pass over own track
 const G = 9.81;
 
-export const PIECES = {
+export const PIECES: Record<PieceType, PieceDef> = {
   station: { name: 'Station', cost: 300, len: 1, dh: 0, icon: '🚉', station: true },
   straight: { name: 'Straight', cost: 60, len: 1, dh: 0, icon: '⬆' },
   left: { name: 'Tight left', cost: 90, len: 1, dh: 0, icon: '↰', turn: -1 },
@@ -44,21 +106,21 @@ export const PHYSICS = {
  * Lays out pieces from the start tile. Returns each segment's tiles and
  * heights plus the cursor where the next piece would begin.
  */
-export function layout(start, pieces) {
+export function layout(start: CoasterStart, pieces: readonly string[]): Layout {
   let x = start.x, y = start.y, d = start.dir, h = 0;
-  const segs = [];
-  for (const type of pieces) {
-    const def = PIECES[type];
+  const segs: Segment[] = [];
+  for (const type of pieces as PieceType[]) {
+    const def: PieceDef | undefined = PIECES[type];
     if (!def) return { segs, cursor: { x, y, dir: d, h }, error: `Unknown piece ${type}` };
     const dirOut = def.turn ? (d + def.turn + 4) % 4 : d;
-    const cells = [];
+    const cells: Segment['cells'] = [];
     if (def.wide) {
-      const [dx, dy] = DIRS[d], [ox, oy] = DIRS[dirOut];
+      const [dx, dy] = DIRS[d]!, [ox, oy] = DIRS[dirOut]!;
       cells.push({ x, y }, { x: x + dx, y: y + dy }, { x: x + dx + ox, y: y + dy + oy });
     } else {
-      for (let k = 0; k < def.len; k++) cells.push({ x: x + DIRS[d][0] * k, y: y + DIRS[d][1] * k });
+      for (let k = 0; k < def.len; k++) cells.push({ x: x + DIRS[d]![0] * k, y: y + DIRS[d]![1] * k });
     }
-    const seg = { type, x, y, dirIn: d, dirOut, h0: h, h1: h + def.dh, cells };
+    const seg: Segment = { type, x, y, dirIn: d, dirOut, h0: h, h1: h + def.dh, cells };
     segs.push(seg);
     const last = cells[cells.length - 1];
     x = last.x + DIRS[dirOut][0];
@@ -69,13 +131,14 @@ export function layout(start, pieces) {
   return { segs, cursor: { x, y, dir: d, h } };
 }
 
-export function isComplete(start, pieces) {
+export function isComplete(start: CoasterStart, pieces: readonly string[]): boolean {
   if (pieces.length < 2 || pieces[0] !== 'station') return false;
   const { cursor } = layout(start, pieces);
   return cursor.x === start.x && cursor.y === start.y && cursor.dir === start.dir && cursor.h === 0;
 }
 
-export const designCost = (pieces) => pieces.reduce((n, p) => n + (PIECES[p]?.cost || 0), 0);
+export const designCost = (pieces: readonly string[]): number =>
+  pieces.reduce((n, p) => n + (PIECES[p as PieceType]?.cost || 0), 0);
 
 // ---------------------------------------------------------------------------
 // Geometry: sample the track centreline in world units.
@@ -83,39 +146,38 @@ export const designCost = (pieces) => pieces.reduce((n, p) => n + (PIECES[p]?.co
 // rider's "up" direction (inverted at the top of a loop).
 // ---------------------------------------------------------------------------
 
-const lerp = (a, b, t) => a + (b - a) * t;
-const hermite = (p0, p1, m0, m1, t) => {
+const hermite = (p0: number, p1: number, m0: number, m1: number, t: number): number => {
   const t2 = t * t, t3 = t2 * t;
   return (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
 };
 
-export function samples(start, pieces, perTile = 10) {
+export function samples(start: CoasterStart, pieces: readonly string[], perTile = 10): TrackSample[] {
   const { segs } = layout(start, pieces);
   const grades = segs.map((s) => (s.h1 - s.h0) * STEP / PIECES[s.type].len);
   const n = segs.length;
-  const out = [];
+  const out: TrackSample[] = [];
   segs.forEach((s, i) => {
     const def = PIECES[s.type];
     // Smooth height: slopes at each joint are the average of neighbouring grades.
-    const prev = grades[(i - 1 + n) % n], next = grades[(i + 1) % n], g = grades[i];
+    const prev = grades[(i - 1 + n) % n]!, next = grades[(i + 1) % n]!, g = grades[i]!;
     const m0 = ((prev + g) / 2) * def.len, m1 = ((g + next) / 2) * def.len;
     const y0 = s.h0 * STEP, y1 = s.h1 * STEP;
-    const [dx, dz] = DIRS[s.dirIn];
+    const [dx, dz] = DIRS[s.dirIn]!;
     const ex = s.x + 0.5 - dx * 0.5, ez = s.y + 0.5 - dz * 0.5; // entry edge midpoint
     const count = def.loop ? perTile * 8 : def.wide ? perTile * 3 : perTile * def.len;
     for (let k = 0; k < count; k++) {
       const u = k / count;
-      let px, pz, py, up = [0, 1, 0];
+      let px: number, pz: number, py: number, up: Vec3 = [0, 1, 0];
       if (def.wide) {
         // Quarter circle of radius 1.5 tiles around a point beside the entry.
-        const [ox, oz] = DIRS[s.dirOut];
+        const [ox, oz] = DIRS[s.dirOut]!;
         const cx = ex + ox * 1.5, cz = ez + oz * 1.5;
         const a = u * Math.PI / 2;
         px = cx - ox * 1.5 * Math.cos(a) + dx * 1.5 * Math.sin(a);
         pz = cz - oz * 1.5 * Math.cos(a) + dz * 1.5 * Math.sin(a);
         py = hermite(y0, y1, m0, m1, u);
       } else if (def.turn) {
-        const [ox, oz] = DIRS[s.dirOut];
+        const [ox, oz] = DIRS[s.dirOut]!;
         const cx = s.x + 0.5, cz = s.y + 0.5;
         const xx = cx + ox * 0.5, xz = cz + oz * 0.5; // exit edge midpoint
         px = (1 - u) ** 2 * ex + 2 * u * (1 - u) * cx + u * u * xx;
@@ -147,19 +209,19 @@ export function samples(start, pieces, perTile = 10) {
 // Physics
 // ---------------------------------------------------------------------------
 
-const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const len = (a) => Math.hypot(a[0], a[1], a[2]);
-const scale = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const norm = (a) => { const l = len(a) || 1; return scale(a, 1 / l); };
-const toM = (s) => [s.x * METERS, s.y * METERS, s.z * METERS];
+const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const len = (a: Vec3): number => Math.hypot(a[0], a[1], a[2]);
+const scale = (a: Vec3, k: number): Vec3 => [a[0] * k, a[1] * k, a[2] * k];
+const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = (a: Vec3): Vec3 => { const l = len(a) || 1; return scale(a, 1 / l); };
+const toM = (s: TrackSample): Vec3 => [s.x * METERS, s.y * METERS, s.z * METERS];
 
 /**
  * Runs a train once around the circuit. Returns ride statistics, or
  * { ok: false, reason, seg } if the train can't make it.
  */
-export function simulate(start, pieces) {
+export function simulate(start: CoasterStart, pieces: readonly string[]): CoasterDesign {
   if (!isComplete(start, pieces)) return { ok: false, reason: 'The track must return to the station.' };
   const pts = samples(start, pieces);
   const n = pts.length;
@@ -204,7 +266,7 @@ export function simulate(start, pieces) {
     const t = norm([d1[0] + d2[0], d1[1] + d2[1], d1[2] + d2[2]]);
     const k = scale(sub(scale(d2, 1 / l2), scale(d1, 1 / l1)), 2 / (l1 + l2)); // curvature vector
     const vi = speed[i];
-    const felt = [vi * vi * k[0], vi * vi * k[1] + G, vi * vi * k[2]];
+    const felt: Vec3 = [vi * vi * k[0], vi * vi * k[1] + G, vi * vi * k[2]];
     let up = pts[i].up;
     up = norm(sub(up, scale(t, dot(up, t)))); // perpendicular to the track
     const side = cross(t, up);
@@ -241,7 +303,7 @@ export function simulate(start, pieces) {
   if (run >= 2) { drops++; biggestDrop = Math.max(biggestDrop, run); }
 
   const kmh = maxSpeed * 3.6;
-  const clamp10 = (x) => Math.round(Math.max(0, Math.min(10, x)) * 10) / 10;
+  const clamp10 = (x: number) => Math.round(Math.max(0, Math.min(10, x)) * 10) / 10;
   let intensity = (maxG - 1) * 1.6 + Math.max(0, -minG) * 2.5 + maxLat * 2.2 + kmh / 35;
   let excitement = 0.5 + kmh / 22 + inversions * 0.9 + Math.min(airtime, 6) * 0.6 + drops * 0.35
     + Math.min(length / 250, 2) + Math.min(turns, 12) * 0.05;
@@ -267,4 +329,4 @@ export function simulate(start, pieces) {
   };
 }
 
-const round1 = (x) => Math.round(x * 10) / 10;
+const round1 = (x: number) => Math.round(x * 10) / 10;

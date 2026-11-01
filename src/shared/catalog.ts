@@ -1,12 +1,14 @@
 // Everything a player can build or hire. All sim balancing lives here.
 
+import type { RideDef, StallDef, SceneryDef, SpecialDef, StaffDef, StaffRole, ItemDef, ItemCategory, Objective, Sells } from './types.ts';
+
 export const GRID = 40;
 export const DAY_SECONDS = 60; // game-seconds per in-game day
 export const START_CASH = 25000;
 export const PATH_COST = 10;
 export const REFUND_RATE = 0.5;
 
-export const RIDES = {
+export const RIDES: Record<string, RideDef> = {
   teacups: {
     name: 'Whirly Teacups', w: 2, h: 2, cost: 1200, capacity: 8, duration: 6,
     excitement: 3, intensity: 2, nausea: 4, price: 2, upkeep: 15, reliability: 0.985,
@@ -55,13 +57,13 @@ export const RIDES = {
 };
 
 /** Base definition for player-designed coasters; stats come from physics. */
-export const CUSTOM_COASTER = {
+export const CUSTOM_COASTER: RideDef = {
   name: 'Custom Coaster', w: 1, h: 1, cost: 0, capacity: 16, duration: 30,
   excitement: 0, intensity: 0, nausea: 0, price: 0, upkeep: 30, reliability: 0.975,
   color: '#3a86ff', coaster: true, custom: true,
 };
 
-export const STALLS = {
+export const STALLS: Record<string, StallDef> = {
   burger: { name: 'Burger Shack', w: 1, h: 1, cost: 400, sells: 'food', price: 4, unitCost: 1.5, upkeep: 10, icon: '🍔', color: '#e8833a' },
   pizza: { name: 'Pizza Slice', w: 1, h: 1, cost: 500, sells: 'food', price: 5, unitCost: 1.8, upkeep: 12, icon: '🍕', color: '#d9534f' },
   lemonade: { name: 'Lemonade Stand', w: 1, h: 1, cost: 300, sells: 'drink', price: 2, unitCost: 0.5, upkeep: 8, icon: '🍋', color: '#f5d33f' },
@@ -77,9 +79,9 @@ export const STALLS = {
 };
 
 /** Base value guests place on each kind of purchase (before tolerance & thrift). */
-export const SHOP_VALUE = { food: 7, drink: 4.5, restroom: 2, firstaid: 2, souvenir: 12, umbrella: 9, atm: 3, info: 2 };
+export const SHOP_VALUE: Record<Sells, number> = { food: 7, drink: 4.5, restroom: 2, firstaid: 2, souvenir: 12, umbrella: 9, atm: 3, info: 2 };
 
-export const SCENERY = {
+export const SCENERY: Record<string, SceneryDef> = {
   tree: { name: 'Oak Tree', w: 1, h: 1, cost: 25, beauty: 2 },
   pine: { name: 'Pine Tree', w: 1, h: 1, cost: 25, beauty: 2 },
   flowers: { name: 'Flower Bed', w: 1, h: 1, cost: 15, beauty: 3 },
@@ -104,7 +106,7 @@ export const AGEING = { perDay: 0.0012, maxLoss: 0.06, refurbishShare: 0.3 };
 /** Shared coaster design codes are prefixed with this. */
 export const DESIGN_CODE_PREFIX = 'RCM1:';
 
-export const STAFF = {
+export const STAFF: Record<StaffRole, StaffDef> = {
   janitor: { name: 'Janitor', wage: 30, color: '#3fa34d', hp: 3 },
   mechanic: { name: 'Mechanic', wage: 45, color: '#e07b24', hp: 3 },
   guard: { name: 'Security Guard', wage: 55, color: '#2b4c7e', hp: 5 },
@@ -112,7 +114,7 @@ export const STAFF = {
 };
 
 /** Special structures for dealing with the Pandemonium heist crew. */
-export const SPECIAL = {
+export const SPECIAL: Record<string, SpecialDef> = {
   securityhq: { name: 'Security HQ', w: 2, h: 2, cost: 5000, upkeep: 60, color: '#2b4c7e' },
   retribution: { name: 'Retribution Rig', w: 4, h: 3, cost: 12000, upkeep: 40, color: '#5a1a1a' },
   // Placed automatically when an officer is killed; cannot be bought or bulldozed.
@@ -199,11 +201,11 @@ export const CRIME = {
   safetyRecovery: 0.03, // safety points per game-second
 };
 
-export function itemDef(kind) {
+export function itemDef(kind: string): ItemDef | null {
   return RIDES[kind] || STALLS[kind] || SCENERY[kind] || SPECIAL[kind] || (kind === 'custom' ? CUSTOM_COASTER : null);
 }
 
-export function itemCategory(kind) {
+export function itemCategory(kind: string): ItemCategory | null {
   if (RIDES[kind] || kind === 'custom') return 'ride';
   if (STALLS[kind]) return 'stall';
   if (SCENERY[kind]) return 'scenery';
@@ -211,7 +213,7 @@ export function itemCategory(kind) {
   return null;
 }
 
-export const OBJECTIVES = [
+export const OBJECTIVES: Objective[] = [
   { id: 'first-ride', text: 'Build your first ride', test: (s) => s.rides >= 1 },
   { id: 'guests-25', text: 'Have 25 guests in the park', test: (s) => s.guests >= 25 },
   { id: 'coaster', text: 'Build a roller coaster', test: (s) => s.coasters >= 1 },

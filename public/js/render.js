@@ -1,7 +1,7 @@
 // Isometric canvas renderer. Everything is drawn procedurally — no image assets.
 
-import { GRID, RIDES, STALLS, STAFF, PANDEMONIUM } from './catalog.js';
-import { TILE, ENTRANCE, idx, actorPos, objectAt } from './sim.js';
+import { GRID, RIDES, STALLS, STAFF, PANDEMONIUM } from './shared/catalog.js';
+import { TILE, ENTRANCE, idx, actorPos, objectAt } from './shared/sim.js';
 
 export const TW = 64; // tile width in world pixels
 export const TH = 32; // tile height in world pixels

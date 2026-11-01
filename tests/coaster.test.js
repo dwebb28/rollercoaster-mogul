@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as C from '../public/js/coaster.js';
-import * as Sim from '../public/js/sim.js';
+import * as C from '../src/shared/coaster.ts';
+import * as Sim from '../src/shared/sim.ts';
 
 const start = { x: 5, y: 10, dir: 0 };
 const L = (n, p) => Array(n).fill(p);

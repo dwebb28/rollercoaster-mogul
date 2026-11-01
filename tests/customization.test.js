@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as Sim from '../public/js/sim.js';
-import { defaultSettings, sanitizeSettings, SETTINGS_SCHEMA, DIFFICULTIES, CLIMATES, EVENTS, GUEST_TYPES, PATH_STYLES } from '../public/js/options.js';
+import * as Sim from '../src/shared/sim.ts';
+import { defaultSettings, sanitizeSettings, SETTINGS_SCHEMA, DIFFICULTIES, CLIMATES, EVENTS, GUEST_TYPES, PATH_STYLES } from '../src/shared/options.ts';
 
 const run = (p, seconds) => { for (let i = 0; i < seconds * 10; i++) Sim.step(p, 0.1); };
 

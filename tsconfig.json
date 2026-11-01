@@ -1,0 +1,24 @@
+{
+  // Shared game code (simulation, data, coaster physics) is TypeScript in
+  // src/shared. Node runs it directly (type stripping), and `npm run build`
+  // emits browser JavaScript to public/js/shared.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM"],
+    "rootDir": "src/shared",
+    "outDir": "public/js/shared",
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "removeComments": false,
+    "sourceMap": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/shared/**/*.ts"]
+}

@@ -5,19 +5,46 @@ import {
   GRID, DAY_SECONDS, START_CASH, PATH_COST, REFUND_RATE,
   RIDES, STALLS, SCENERY, STAFF, SPECIAL, OBJECTIVES, CRIME, PANDEMONIUM, itemDef, itemCategory,
   CUSTOM_COASTER, SHOP_VALUE, AGEING, DESIGN_CODE_PREFIX,
-} from './catalog.js';
-import * as Coaster from './coaster.js';
+} from './catalog.ts';
+import * as Coaster from './coaster.ts';
 import {
   sanitizeSettings, settingDef, CLIMATES, WEATHER, EVENTS, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES,
   isHexColor, weighted,
-} from './options.js';
+} from './options.ts';
+
+import type {
+  Park, ParkObject, Guest, Staff, Walker, StaffRole, Settings, EventDef, Fx, CriminalRecord, CustodyCase,
+  ParkStats, Ledger, GuestTypeKey, CrimeKind, RideDef, TileKind, PieceType, Result, WeatherDef, SimEvent, PandemoniumStats,
+  StallDef, Incident, CoasterDesign, LedgerCategory, RideObject, ShopObject, CoasterObject,
+} from './types.ts';
+import type { Cursor } from './coaster.ts';
+
+export type { Park, ParkObject, Guest, Staff, ParkStats, Settings } from './types.ts';
+
+/** Security coverage of a tile: nearest guard, cameras and lamps in range. */
+interface Coverage {
+  guard: Staff | null;
+  guardD: number;
+  camera: boolean;
+  lamp: boolean;
+}
+
+/** Options for spawning a guest outside the normal arrival flow. */
+interface SpawnOpts {
+  type?: GuestTypeKey;
+  cash?: number;
+  name?: string;
+  crime?: CrimeKind;
+  gang?: string | null;
+  honest?: boolean;
+}
 
 export const SAVE_VERSION = 2;
 
-export const TILE = { GRASS: 0, PATH: 1, ENTRANCE: 2 };
+export const TILE = { GRASS: 0, PATH: 1, ENTRANCE: 2 } as const;
 export const ENTRANCE = { x: GRID / 2, y: GRID - 1 };
 
-const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const GUEST_SPEED = 1.4; // tiles per game-second
 const STAFF_SPEED = 1.7;
 const MAX_GUESTS = 600;
@@ -27,27 +54,27 @@ const FIRST_NAMES = [
 ];
 const SHIRTS = ['#e5484d', '#3e8ed0', '#f2b84b', '#7bd389', '#9b6bd6', '#ef6fa8', '#ffffff', '#2bb3a3', '#ff8a3d'];
 
-export const idx = (x, y) => y * GRID + x;
-export const inBounds = (x, y) => x >= 0 && y >= 0 && x < GRID && y < GRID;
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+export const idx = (x: number, y: number) => y * GRID + x;
+export const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < GRID && y < GRID;
+const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
 
 /** Seeded PRNG (mulberry32) whose state is part of the save. */
-function rand(park) {
+function rand(park: Park) {
   park.rngState = (park.rngState + 0x6d2b79f5) >>> 0;
   let t = park.rngState;
   t = Math.imul(t ^ (t >>> 15), t | 1);
   t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
-const pick = (park, arr) => arr[Math.floor(rand(park) * arr.length)];
+const pick = <T>(park: Park, arr: readonly T[]): T => arr[Math.floor(rand(park) * arr.length)]!;
 
 // ---------------------------------------------------------------------------
 // Creation, indexing, persistence
 // ---------------------------------------------------------------------------
 
-export function createPark(name = 'New Park', seed = Date.now(), settings = undefined) {
+export function createPark(name = 'New Park', seed = Date.now(), settings?: Partial<Settings>): Park {
   const cfg = sanitizeSettings(settings);
-  const park = {
+  const park: Park = {
     version: SAVE_VERSION,
     name: String(name).slice(0, 40),
     seed: seed >>> 0,
@@ -83,6 +110,7 @@ export function createPark(name = 'New Park', seed = Date.now(), settings = unde
     fence: false,
     locked: false,
     pandemonium: newPandaStats(),
+    ...transientDefaults(),
   };
   park.tiles[idx(ENTRANCE.x, ENTRANCE.y)] = TILE.ENTRANCE;
   for (let y = ENTRANCE.y - 1; y >= ENTRANCE.y - 6; y--) park.tiles[idx(ENTRANCE.x, y)] = TILE.PATH;
@@ -104,14 +132,19 @@ export function createPark(name = 'New Park', seed = Date.now(), settings = unde
   return park;
 }
 
-const RECORD_KEYS = ['theft', 'assault', 'robbery', 'drugs', 'homicide', 'stolen'];
-const newRecord = () => Object.fromEntries(RECORD_KEYS.map((k) => [k, 0]));
-function cleanRecord(r) {
+/** Lookup tables that rebuildIndex() fills in; never saved. */
+function transientDefaults(): Pick<Park, '_objAt' | '_byId' | '_guestById' | '_events'> {
+  return { _objAt: new Int32Array(GRID * GRID), _byId: new Map(), _guestById: new Map(), _events: [] };
+}
+
+const RECORD_KEYS = ['theft', 'assault', 'robbery', 'drugs', 'homicide', 'stolen'] as const;
+const newRecord = (): CriminalRecord => ({ theft: 0, assault: 0, robbery: 0, drugs: 0, homicide: 0, stolen: 0 });
+function cleanRecord(r: unknown): CriminalRecord {
   const out = newRecord();
-  if (r && typeof r === 'object') for (const k of RECORD_KEYS) out[k] = num(r[k], 0, 1e9);
+  if (r && typeof r === 'object') for (const k of RECORD_KEYS) out[k] = num((r as Record<string, unknown>)[k], 0, 1e9);
   return out;
 }
-export const offences = (r) => r.theft + r.assault + r.robbery + r.drugs + r.homicide;
+export const offences = (r: CriminalRecord): number => r.theft + r.assault + r.robbery + r.drugs + r.homicide;
 
 function newPandaStats() {
   return { raids: 0, defeated: 0, escaped: 0, captured: 0, executions: 0, nextRaidDay: PANDEMONIUM.firstRaidDay };
@@ -122,7 +155,7 @@ function newLedger() {
 }
 
 /** Ground tiles an object stands on (custom coasters follow their track). */
-export function cellsOf(obj) {
+export function cellsOf(obj: ParkObject) {
   if (obj.kind === 'custom') return obj._cells || [];
   const out = [];
   for (let y = obj.y; y < obj.y + obj.h; y++) for (let x = obj.x; x < obj.x + obj.w; x++) out.push([x, y]);
@@ -130,28 +163,33 @@ export function cellsOf(obj) {
 }
 
 /** Ride definition for an object, including physics-derived custom coasters. */
-export function rideDef(obj) {
+export function rideDef(obj: ParkObject) {
   if (RIDES[obj.kind]) return obj._def || RIDES[obj.kind];
   return obj.kind === 'custom' ? obj._def || CUSTOM_COASTER : null;
 }
 
+/** Rides carry a queue and a ride cycle. */
+export const isRideObj = (o: ParkObject): o is RideObject => Array.isArray(o.queue);
+/** Rides and shops carry a till (price, takings, open/broken). */
+export const hasTill = (o: ParkObject): o is ShopObject => o.stats !== undefined;
+
 /** Display name: a player-chosen name, else the catalogue name. */
-export function objName(obj) {
+export function objName(obj: ParkObject) {
   return obj.name || rideDef(obj)?.name || itemDef(obj.kind)?.name || obj.kind;
 }
 
-const cfgOf = (park) => park.settings;
+const cfgOf = (park: Park) => park.settings;
 /** Current weather definition (always sunny when weather is turned off). */
-export const weatherOf = (park) => (park.settings.weather ? WEATHER[park.weather.type] || WEATHER.sunny : WEATHER.sunny);
-const hasEffect = (park, id) => park.effects.some((e) => e.id === id && e.until > park.time);
-const guestType = (g) => GUEST_TYPES[g.type] || GUEST_TYPES.family;
+export const weatherOf = (park: Park) => (park.settings.weather ? WEATHER[park.weather.type] || WEATHER.sunny : WEATHER.sunny);
+const hasEffect = (park: Park, id: string) => park.effects.some((e) => e.id === id && e.until > park.time);
+const guestType = (g: Guest) => GUEST_TYPES[g.type] || GUEST_TYPES.family;
 
 /** Rebuilds transient lookup tables (anything prefixed with `_`). */
-function rebuildIndex(park) {
+function rebuildIndex(park: Park) {
   park._objAt = new Int32Array(GRID * GRID);
   park._byId = new Map();
   for (const obj of park.objects) {
-    if (obj.kind === 'custom') refreshCoaster(obj);
+    if (isCoaster(obj)) refreshCoaster(obj);
     else if (RIDES[obj.kind] && obj.name) obj._def = { ...RIDES[obj.kind], name: obj.name };
     for (const [x, y] of cellsOf(obj)) {
       if (!inBounds(x, y)) throw new Error('object out of bounds');
@@ -167,11 +205,11 @@ function rebuildIndex(park) {
 }
 
 /** Recomputes which path tiles touch each object. */
-function refreshAccess(park) {
+function refreshAccess(park: Park) {
   for (const obj of park.objects) {
     if (obj.kind === 'custom') {
       // Guests board at the station only.
-      const access = new Set();
+      const access = new Set<number>();
       for (const [x, y] of obj._stationCells || []) {
         for (const [dx, dy] of DIRS) {
           const nx = x + dx, ny = y + dy;
@@ -181,7 +219,7 @@ function refreshAccess(park) {
       obj._access = [...access];
       continue;
     }
-    const access = [];
+    const access: number[] = [];
     for (let y = obj.y - 1; y <= obj.y + obj.h; y++) {
       for (let x = obj.x - 1; x <= obj.x + obj.w; x++) {
         const edge = x === obj.x - 1 || x === obj.x + obj.w;
@@ -195,7 +233,10 @@ function refreshAccess(park) {
   for (const a of [...park.guests, ...park.staff]) a.route = null;
 }
 
-export function serialize(park) {
+/** JSON-safe save document (the shape of Park minus transient fields). */
+export type SaveData = Record<string, unknown>;
+
+export function serialize(park: Park): SaveData {
   const data = JSON.parse(JSON.stringify(park, (k, v) => (k.startsWith('_') ? undefined : v)));
   data.tiles = park.tiles.join('');
   data.litter = park.litter.join('');
@@ -205,12 +246,25 @@ export function serialize(park) {
   return data;
 }
 
-const num = (v, lo, hi, fallback = lo) => (Number.isFinite(v) ? clamp(v, lo, hi) : fallback);
-const okPos = (a) => Number.isInteger(a.x) && Number.isInteger(a.y) && inBounds(a.x, a.y)
+/** Type guard: is `k` an own key of `table`? Used to vet untrusted strings from saves. */
+export const isKey = <T extends object>(table: T, k: unknown): k is keyof T =>
+  typeof k === 'string' && Object.hasOwn(table, k);
+
+const INCIDENT_TYPES: readonly string[] = ['theft', 'assault', 'heist', 'homicide', 'arrest', 'raid', 'execution', 'drugs', 'gang', 'sentence'];
+
+/** Clamps an untrusted value to [lo, hi], or returns the fallback if it isn't a number. */
+const num = (v: unknown, lo: number, hi: number, fallback = lo): number =>
+  (typeof v === 'number' && Number.isFinite(v) ? clamp(v, lo, hi) : fallback);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const okPos = (a: any): boolean => Number.isInteger(a.x) && Number.isInteger(a.y) && inBounds(a.x, a.y)
   && Number.isInteger(a.nx) && Number.isInteger(a.ny) && inBounds(a.nx, a.ny);
 
-/** Validates untrusted save data and returns a live park. Throws on bad input. */
-export function deserialize(data) {
+/**
+ * Validates untrusted save data and returns a live park. Throws on bad input.
+ * `data` and the callbacks below are deliberately `any`: this is the trust
+ * boundary, and every field is checked, clamped or allow-listed before use.
+ */
+export function deserialize(data: any): Park {
   if (!data || typeof data !== 'object') throw new Error('not an object');
   if (data.version !== 1 && data.version !== SAVE_VERSION) throw new Error('unsupported version');
   const n = GRID * GRID;
@@ -229,41 +283,41 @@ export function deserialize(data) {
   park.open = data.open !== false;
   park.rating = num(data.rating, 0, 999, 500);
   park.safety = num(data.safety, 0, 100, 100);
-  park.tiles = [...data.tiles].map(Number);
-  park.litter = [...data.litter].map(Number);
+  park.tiles = [...(data.tiles as string)].map(Number) as TileKind[];
+  park.litter = [...(data.litter as string)].map(Number);
   // v1 saves predate settings: they get the Normal preset (see docs/PERSISTENCE.md).
   park.settings = sanitizeSettings(data.settings);
   park.seed = num(data.seed, 0, 0xffffffff, park.rngState) >>> 0;
-  park.weather = { type: WEATHER[data.weather?.type] ? data.weather.type : 'sunny', day: num(data.weather?.day, 0, 1e7, 1) };
+  park.weather = { type: isKey(WEATHER, data.weather?.type) ? data.weather.type : 'sunny', day: num(data.weather?.day, 0, 1e7, 1) };
   park.buzz = num(data.buzz, -100, 100, 0);
   park.effects = Array.isArray(data.effects)
-    ? data.effects.slice(0, 20).filter((e) => ['outage', 'protest'].includes(e?.id)).map((e) => ({ id: e.id, until: num(e.until, 0, 1e9) }))
+    ? data.effects.slice(0, 20).filter((e: any) => ['outage', 'protest'].includes(e?.id)).map((e: any) => ({ id: e.id, until: num(e.until, 0, 1e9) }))
     : [];
   park.eventLog = Array.isArray(data.eventLog)
-    ? data.eventLog.slice(0, 20).map((e) => ({ id: String(e?.id ?? '').slice(0, 20), text: String(e?.text ?? '').slice(0, 160), day: num(e?.day, 0, 1e7) }))
+    ? data.eventLog.slice(0, 20).map((e: any) => ({ id: String(e?.id ?? '').slice(0, 20), text: String(e?.text ?? '').slice(0, 160), day: num(e?.day, 0, 1e7) }))
     : [];
   park.pathStyles = typeof data.pathStyles === 'string' && new RegExp(`^[0-${PATH_STYLES.length - 1}]{${n}}$`).test(data.pathStyles)
-    ? [...data.pathStyles].map(Number) : new Array(n).fill(0);
+    ? [...(data.pathStyles as string)].map(Number) : new Array<number>(n).fill(0);
   park.uniforms = {};
   for (const [role, c] of Object.entries(data.uniforms && typeof data.uniforms === 'object' ? data.uniforms : {})) {
-    if (STAFF[role] && isHexColor(c)) park.uniforms[role] = c;
+    if (isKey(STAFF, role) && isHexColor(c)) park.uniforms[role] = c;
   }
   park.stains = typeof data.stains === 'string' && new RegExp(`^[0-3]{${n}}$`).test(data.stains)
-    ? [...data.stains].map(Number) : new Array(n).fill(0);
+    ? [...(data.stains as string)].map(Number) : new Array<number>(n).fill(0);
   if (park.tiles[idx(ENTRANCE.x, ENTRANCE.y)] !== TILE.ENTRANCE) throw new Error('entrance missing');
 
   let maxId = 0;
-  const seen = new Set();
-  const ensureId = (id) => {
-    if (!Number.isInteger(id) || id <= 0 || seen.has(id)) throw new Error('bad id');
+  const seen = new Set<number>();
+  const ensureId = (id: unknown): void => {
+    if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0 || seen.has(id)) throw new Error('bad id');
     seen.add(id);
     maxId = Math.max(maxId, id);
   };
 
-  const pendingCaptives = [];
+  const pendingCaptives: string[] = [];
   // Cosmetic fields any object may carry.
-  const looks = (o) => {
-    const out = { builtDay: num(o.builtDay, 0, 1e7, 1) };
+  const looks = (o: any): Partial<ParkObject> => {
+    const out: Partial<ParkObject> = { builtDay: num(o.builtDay, 0, 1e7, 1) };
     if (typeof o.name === 'string' && o.name.trim() && o.kind !== 'custom') out.name = o.name.trim().slice(0, 40);
     if (isHexColor(o.color)) out.color = o.color;
     return out;
@@ -277,7 +331,7 @@ export function deserialize(data) {
       const t = o.track;
       if (!t || !Number.isInteger(t.dir) || t.dir < 0 || t.dir > 3 || !Array.isArray(t.pieces)) throw new Error('bad coaster track');
       const pieces = t.pieces.slice(0, 400);
-      if (pieces[0] !== 'station' || pieces.some((p) => !Coaster.PIECES[p])) throw new Error('bad coaster track');
+      if (pieces[0] !== 'station' || pieces.some((p: unknown) => !isKey(Coaster.PIECES, p))) throw new Error('bad coaster track');
       park.objects.push(makeObject('custom', o.id, o.x, o.y, num(o.paid, 0, 1e7, 0), {
         price: num(o.price, 0, 50, 0), open: o.open === true && o.building !== true, broken: o.broken === true,
         stats: { riders: num(o.stats?.riders, 0, 1e9), revenue: num(o.stats?.revenue, 0, 1e10) },
@@ -294,7 +348,7 @@ export function deserialize(data) {
       for (const v of Array.isArray(o.show?.victims) ? o.show.victims.slice(0, 50) : []) pendingCaptives.push(String(v).slice(0, 30));
     }
     park.objects.push(makeObject(o.kind, o.id, o.x, o.y, num(o.paid, 0, def.cost, 0), {
-      price: num(o.price, 0, 50, def.price ?? 0),
+      price: num(o.price, 0, 50, 'price' in def ? def.price : 0),
       open: o.open !== false,
       broken: o.broken === true,
       stats: { riders: num(o.stats?.riders, 0, 1e9), revenue: num(o.stats?.revenue, 0, 1e10) },
@@ -316,7 +370,7 @@ export function deserialize(data) {
       nausea: num(g.nausea, 0, 100), pref: num(g.pref, 1, 10, 5), thrift: num(g.thrift, 0, 1, 0.5),
       timeIn: num(g.timeIn, 0, 1e6), leaving: g.leaving === true,
       rides: num(g.rides, 0, 1e4),
-      crime: CRIME.types[g.crime] || g.crime === 'panda' ? g.crime : null,
+      crime: isKey(CRIME.types, g.crime) || g.crime === 'panda' ? g.crime : null,
       hp: num(g.hp, 0, PANDEMONIUM.hp[1], PANDEMONIUM.hp[1]),
       maxHp: num(g.maxHp, 1, PANDEMONIUM.hp[1], PANDEMONIUM.hp[1]),
       acc: num(g.acc, 0, 1, PANDEMONIUM.pandaAccuracy[0]),
@@ -329,19 +383,19 @@ export function deserialize(data) {
       heistLoot: g.heistLoot === true,
       spotted: g.spotted === true,
       injured: g.injured === true,
-      type: GUEST_TYPES[g.type] ? g.type : 'family',
+      type: isKey(GUEST_TYPES, g.type) ? g.type : 'family',
       umbrella: g.umbrella === true, map: g.map === true, souvenir: g.souvenir === true, atmUsed: g.atmUsed === true,
       // Riders/queuers resume walking; ride state is not persisted.
       state: 'walk',
     });
-    const last = park.guests[park.guests.length - 1];
-    if (last.crime === 'panda' && last.hp <= 0) last.hp = 1;
+    const last = park.guests[park.guests.length - 1]!;
+    if (last.crime === 'panda' && (last.hp ?? 0) <= 0) last.hp = 1;
   }
   for (const s of data.staff) {
-    if (!s || !STAFF[s.role] || !okPos(s)) continue;
+    if (!s || !isKey(STAFF, s.role) || !okPos(s)) continue;
     ensureId(s.id);
     const st = newStaff(s.role, s.id, s.x, s.y);
-    applyTraits(st, Array.isArray(s.traits) ? s.traits.filter((t, i, a) => STAFF_TRAITS[t] && a.indexOf(t) === i).slice(0, 3) : []);
+    applyTraits(st, Array.isArray(s.traits) ? s.traits.filter((t: unknown, i: number, a: unknown[]) => isKey(STAFF_TRAITS, t) && a.indexOf(t) === i).slice(0, 3) : []);
     park.staff.push({
       ...st, nx: s.nx, ny: s.ny, name: String(s.name ?? '').slice(0, 40),
       hp: num(s.hp, 0, st.maxHp, st.maxHp), acc: num(s.acc, 0, 1, st.acc), down: num(s.down, 0, 600, 0),
@@ -356,39 +410,39 @@ export function deserialize(data) {
   park.stats.arrests = num(st.arrests, 0, 1e9);
   park.stats.crimes = num(st.crimes, 0, 1e9);
   if (st.today && typeof st.today === 'object') {
-    for (const k of Object.keys(park.stats.today)) park.stats.today[k] = num(st.today[k], -1e10, 1e10, 0);
+    for (const k of Object.keys(park.stats.today) as (keyof Ledger)[]) park.stats.today[k] = num(st.today[k], -1e10, 1e10, 0);
   }
   if (Array.isArray(st.history)) {
-    park.stats.history = st.history.slice(-30).map((h) => ({
+    park.stats.history = st.history.slice(-30).map((h: any) => ({
       day: num(h?.day, 0, 1e7), income: num(h?.income, -1e10, 1e10), expenses: num(h?.expenses, -1e10, 1e10),
       guests: num(h?.guests, 0, 1e6), crimes: num(h?.crimes, 0, 1e6),
     }));
   }
   if (Array.isArray(data.thoughts)) {
-    park.thoughts = data.thoughts.slice(0, 25).map((t) => ({
+    park.thoughts = data.thoughts.slice(0, 25).map((t: any) => ({
       text: String(t?.text ?? '').slice(0, 120), who: String(t?.who ?? '').slice(0, 20), day: num(t?.day, 0, 1e7),
     }));
   }
   if (Array.isArray(data.incidents)) {
-    park.incidents = data.incidents.slice(0, 30).map((t) => ({
-      type: ['theft', 'assault', 'heist', 'homicide', 'arrest', 'raid', 'execution', 'drugs', 'gang', 'sentence'].includes(t?.type) ? t.type : 'theft',
+    park.incidents = data.incidents.slice(0, 30).map((t: any) => ({
+      type: INCIDENT_TYPES.includes(t?.type) ? t.type : 'theft',
       text: String(t?.text ?? '').slice(0, 160), day: num(t?.day, 0, 1e7),
     }));
   }
   if (Array.isArray(data.fallen)) {
-    park.fallen = data.fallen.slice(0, 500).map((f) => ({
-      name: String(f?.name ?? 'Officer').slice(0, 40), role: STAFF[f?.role] ? f.role : 'squad',
+    park.fallen = data.fallen.slice(0, 500).map((f: any) => ({
+      name: String(f?.name ?? 'Officer').slice(0, 40), role: isKey(STAFF, f?.role) ? f.role : 'squad',
       by: String(f?.by ?? 'Pandemonium').slice(0, 40), day: num(f?.day, 0, 1e7), payout: num(f?.payout, 0, 1e7),
     }));
   }
   if (Array.isArray(data.captives)) {
-    park.captives = data.captives.slice(0, 50).map((c) => ({ name: String(c?.name ?? 'Panda').slice(0, 30) }));
+    park.captives = data.captives.slice(0, 50).map((c: any) => ({ name: String(c?.name ?? 'Panda').slice(0, 30) }));
   }
   park.captives.push(...pendingCaptives.map((name) => ({ name })));
   if (Array.isArray(data.custody)) {
-    park.custody = data.custody.slice(0, 100).filter((c) => Number.isInteger(c?.id)).map((c) => ({
+    park.custody = data.custody.slice(0, 100).filter((c: any) => Number.isInteger(c?.id)).map((c: any) => ({
       id: c.id, name: String(c.name ?? 'Suspect').slice(0, 30),
-      kind: CRIME.types[c.kind] || c.kind === 'panda' ? c.kind : 'pickpocket',
+      kind: isKey(CRIME.types, c.kind) || c.kind === 'panda' ? c.kind : 'pickpocket',
       gang: CRIME.gangs.includes(c.gang) ? c.gang : null,
       record: cleanRecord(c.record), by: String(c.by ?? '').slice(0, 60), day: num(c.day, 0, 1e7),
     }));
@@ -398,7 +452,7 @@ export function deserialize(data) {
   park.stats.drugDeals = num(data.stats?.drugDeals, 0, 1e9);
   park.stats.gangRecruits = num(data.stats?.gangRecruits, 0, 1e9);
   const pd = data.pandemonium || {};
-  for (const k of Object.keys(park.pandemonium)) park.pandemonium[k] = num(pd[k], 0, 1e7, park.pandemonium[k]);
+  for (const k of Object.keys(park.pandemonium) as (keyof PandemoniumStats)[]) park.pandemonium[k] = num(pd[k], 0, 1e7, park.pandemonium[k]);
   if (data.raid && typeof data.raid === 'object' && park.guests.some((g) => g.crime === 'panda')) {
     park.raid = {
       startedAt: num(data.raid.startedAt, 0, park.time), size: num(data.raid.size, 0, 50),
@@ -409,15 +463,16 @@ export function deserialize(data) {
   }
   if (Array.isArray(data.objectives)) {
     const valid = new Set(OBJECTIVES.map((o) => o.id));
-    park.objectives = data.objectives.filter((id) => valid.has(id));
+    park.objectives = data.objectives.filter((id: unknown): id is string => typeof id === 'string' && valid.has(id));
   }
 
   rebuildIndex(park);
   return park;
 }
 
-function createEmpty() {
+function createEmpty(): Park {
   return {
+    ...transientDefaults(),
     version: SAVE_VERSION, settings: sanitizeSettings(), seed: 1, weather: { type: 'sunny', day: 1 }, buzz: 0, effects: [], eventLog: [], pathStyles: [], uniforms: {}, name: '', rngState: 1, time: 0, cash: 0, entranceFee: 10, open: true, rating: 500, safety: 100, nextId: 1,
     tiles: [], litter: [], stains: [], objects: [], guests: [], staff: [], raid: null, captives: [], custody: [], fallen: [], fence: false, locked: false, pandemonium: newPandaStats(),
     stats: { totalGuests: 0, peakGuests: 0, arrests: 0, crimes: 0, drugDeals: 0, gangRecruits: 0, today: newLedger(), history: [] },
@@ -429,13 +484,13 @@ function createEmpty() {
 // Queries
 // ---------------------------------------------------------------------------
 
-export const walkable = (park, i) => park.tiles[i] === TILE.PATH || park.tiles[i] === TILE.ENTRANCE;
-export const objectAt = (park, x, y) => (inBounds(x, y) ? park._byId.get(park._objAt[idx(x, y)]) || null : null);
-export const getObject = (park, id) => park._byId.get(id) || null;
-export const day = (park) => Math.floor(park.time / DAY_SECONDS) + 1;
-export const dayProgress = (park) => (park.time % DAY_SECONDS) / DAY_SECONDS;
+export const walkable = (park: Park, i: number) => park.tiles[i] === TILE.PATH || park.tiles[i] === TILE.ENTRANCE;
+export const objectAt = (park: Park, x: number, y: number) => (inBounds(x, y) ? park._byId.get(park._objAt[idx(x, y)]) || null : null);
+export const getObject = (park: Park, id: number) => park._byId.get(id) || null;
+export const day = (park: Park) => Math.floor(park.time / DAY_SECONDS) + 1;
+export const dayProgress = (park: Park) => (park.time % DAY_SECONDS) / DAY_SECONDS;
 
-export function guestAt(park, fx, fy, radius = 0.45) {
+export function guestAt(park: Park, fx: number, fy: number, radius = 0.45) {
   let best = null;
   let bestD = radius * radius;
   for (const g of park.guests) {
@@ -448,11 +503,11 @@ export function guestAt(park, fx, fy, radius = 0.45) {
 }
 
 /** Continuous tile-space position of a guest or staff member (tile centre = +0.5). */
-export function actorPos(a) {
+export function actorPos(a: Walker): { x: number; y: number } {
   return { x: a.x + (a.nx - a.x) * a.t + 0.5, y: a.y + (a.ny - a.y) * a.t + 0.5 };
 }
 
-export function parkStats(park) {
+export function parkStats(park: Park) {
   let customCoasters = 0;
   let rides = 0, coasters = 0, stalls = 0, assets = 0, excitement = 0, broken = 0, beauty = 0;
   for (const o of park.objects) {
@@ -460,7 +515,7 @@ export function parkStats(park) {
     const cat = itemCategory(o.kind);
     if (cat === 'ride') {
       rides++;
-      const rd = rideDef(o);
+      const rd = rideDef(o)!;
       if (rd.coaster) coasters++;
       if (o.kind === 'custom' && !o.building) customCoasters++;
       if (o.open) excitement += rd.excitement;
@@ -488,7 +543,7 @@ export function parkStats(park) {
   };
 }
 
-export function parkSummary(park) {
+export function parkSummary(park: Park) {
   const s = parkStats(park);
   return { name: park.name, value: s.value, rating: s.rating, guests: s.guests, day: day(park) };
 }
@@ -497,7 +552,7 @@ export function parkSummary(park) {
 // Building
 // ---------------------------------------------------------------------------
 
-export function canPlace(park, kind, x, y) {
+export function canPlace(park: Park, kind: string, x: number, y: number) {
   const def = itemDef(kind);
   if (!def) return { ok: false, reason: 'Unknown item' };
   for (let yy = y; yy < y + def.h; yy++) {
@@ -512,19 +567,20 @@ export function canPlace(park, kind, x, y) {
   return { ok: true };
 }
 
-function makeObject(kind, id, x, y, paid, extra = {}) {
+function makeObject(kind: string, id: number, x: number, y: number, paid: number, extra: Partial<ParkObject> = {}): ParkObject {
   const def = itemDef(kind);
-  const obj = { id, kind, x, y, w: def.w, h: def.h, paid };
+  if (!def) throw new Error(`unknown object kind ${kind}`);
+  const obj: ParkObject = { id, kind, x, y, w: def.w, h: def.h, paid, _access: [] };
   const cat = itemCategory(kind);
   if (cat === 'ride' || cat === 'stall') {
-    Object.assign(obj, { price: def.price, open: true, broken: false, stats: { riders: 0, revenue: 0 } });
+    Object.assign(obj, { price: 'price' in def ? def.price : 0, open: true, broken: false, stats: { riders: 0, revenue: 0 } });
   }
   if (cat === 'ride') Object.assign(obj, { phase: 'idle', timer: 0, wait: 0, queue: [], riders: [] });
   if (kind === 'retribution') Object.assign(obj, { pit: 'fire', show: null });
   return Object.assign(obj, extra);
 }
 
-function addObject(park, kind, x, y, paid) {
+function addObject(park: Park, kind: string, x: number, y: number, paid: number): ParkObject {
   const obj = makeObject(kind, park.nextId++, x, y, paid);
   park.objects.push(obj);
   park._byId.set(obj.id, obj);
@@ -533,12 +589,12 @@ function addObject(park, kind, x, y, paid) {
   return obj;
 }
 
-export function build(park, kind, x, y) {
+export function build(park: Park, kind: string, x: number, y: number) {
   if (kind === 'retribution' && !cfgOf(park).executions) return { ok: false, reason: 'Executions are turned off in this park\'s rules.' };
   if (SPECIAL[kind]?.auto) return { ok: false, reason: 'That cannot be built by hand.' };
   const check = canPlace(park, kind, x, y);
   if (!check.ok) return check;
-  const def = itemDef(kind);
+  const def = itemDef(kind)!;
   spend(park, def.cost, 'construction');
   const obj = addObject(park, kind, x, y, def.cost);
   obj.builtDay = day(park);
@@ -551,7 +607,7 @@ export function build(park, kind, x, y) {
   return { ok: true, obj, warn };
 }
 
-export function buildPath(park, x, y, style = 0) {
+export function buildPath(park: Park, x: number, y: number, style = 0) {
   if (!inBounds(x, y)) return { ok: false, reason: 'Out of bounds' };
   const i = idx(x, y);
   style = clamp(Math.round(style) || 0, 0, PATH_STYLES.length - 1);
@@ -572,7 +628,7 @@ export function buildPath(park, x, y, style = 0) {
   return { ok: true };
 }
 
-export function bulldoze(park, x, y) {
+export function bulldoze(park: Park, x: number, y: number) {
   if (!inBounds(x, y)) return { ok: false, reason: 'Out of bounds' };
   const i = idx(x, y);
   const obj = objectAt(park, x, y);
@@ -591,8 +647,8 @@ export function bulldoze(park, x, y) {
   return { ok: false, reason: 'Nothing to remove', silent: true };
 }
 
-function removeObject(park, obj) {
-  if (obj.queue) for (const gid of [...obj.queue, ...obj.riders]) releaseGuest(park, park._guestById.get(gid));
+function removeObject(park: Park, obj: ParkObject) {
+  if (isRideObj(obj)) for (const gid of [...obj.queue, ...obj.riders]) releaseGuest(park, park._guestById.get(gid));
   for (const s of park.staff) if (s.task === obj.id) s.task = null;
   for (const [xx, yy] of cellsOf(obj)) park._objAt[idx(xx, yy)] = 0;
   park.objects.splice(park.objects.indexOf(obj), 1);
@@ -602,29 +658,29 @@ function removeObject(park, obj) {
   refreshAccess(park);
 }
 
-export function setPrice(park, id, price) {
+export function setPrice(park: Park, id: number, price: number) {
   const obj = getObject(park, id);
   if (obj && 'price' in obj) obj.price = clamp(Math.round(price * 2) / 2, 0, 50);
 }
 
-export function setOpen(park, id, open) {
+export function setOpen(park: Park, id: number, open: boolean) {
   const obj = getObject(park, id);
   if (!obj || !('open' in obj)) return;
   if (open && obj.building) return; // custom coasters open via openCoaster()
   obj.open = open;
-  if (!open && obj.queue) for (const gid of obj.queue.splice(0)) releaseGuest(park, park._guestById.get(gid));
+  if (!open && isRideObj(obj)) for (const gid of obj.queue.splice(0)) releaseGuest(park, park._guestById.get(gid));
 }
 
-export function setEntranceFee(park, fee) { park.entranceFee = clamp(Math.round(fee), 0, 100); }
-export function setParkOpen(park, open) { park.open = !!open; }
-export function renamePark(park, name) { park.name = String(name).trim().slice(0, 40) || park.name; }
+export function setEntranceFee(park: Park, fee: number) { park.entranceFee = clamp(Math.round(fee), 0, 100); }
+export function setParkOpen(park: Park, open: boolean) { park.open = !!open; }
+export function renamePark(park: Park, name: string) { park.name = String(name).trim().slice(0, 40) || park.name; }
 
-export function hire(park, role) {
+export function hire(park: Park, role: StaffRole) {
   if (!STAFF[role]) return { ok: false, reason: 'Unknown role' };
   if (park.staff.length >= 200) return { ok: false, reason: 'Too many staff' };
   const req = STAFF[role].requires;
   const base = req ? park.objects.find((o) => o.kind === req) : null;
-  if (req && !base) return { ok: false, reason: `Build a ${itemDef(req).name} first.` };
+  if (req && !base) return { ok: false, reason: `Build a ${itemDef(req)!.name} first.` };
   const start = base?._access[0];
   const s = start !== undefined
     ? newStaff(role, park.nextId++, start % GRID, (start / GRID) | 0)
@@ -638,11 +694,11 @@ export function hire(park, role) {
 
 const TRAIT_CLASHES = [['speedy', 'lazy'], ['sharpshooter', 'clumsy'], ['tough', 'fragile'], ['veteran', 'rookie']];
 
-function rollTraits(park, role) {
+function rollTraits(park: Park, role: StaffRole) {
   const r = rand(park);
   const n = r < 0.4 ? 0 : r < 0.85 ? 1 : 2;
   const pool = Object.entries(STAFF_TRAITS).filter(([, t]) => !t.roles || t.roles.includes(role)).map(([k]) => k);
-  const out = [];
+  const out: string[] = [];
   for (let tries = 0; out.length < n && tries < 20; tries++) {
     const t = pick(park, pool);
     if (out.includes(t) || TRAIT_CLASHES.some((pair) => pair.includes(t) && pair.some((o) => out.includes(o)))) continue;
@@ -652,32 +708,32 @@ function rollTraits(park, role) {
 }
 
 /** Applies trait effects that change stored stats (health, accuracy). */
-function applyTraits(s, traits) {
+function applyTraits(s: Staff, traits: string[]) {
   s.traits = traits;
   const base = STAFF[s.role];
   s.maxHp = Math.max(1, base.hp + traits.reduce((n, t) => n + (STAFF_TRAITS[t].hp || 0), 0));
   s.hp = s.maxHp;
-  if (base.accuracy) s.acc = clamp(s.acc + traits.reduce((n, t) => n + (STAFF_TRAITS[t].accuracy || 0), 0), 0.2, 0.97);
+  if (base.accuracy) s.acc = clamp(s.acc + traits.reduce((n, t) => n + (STAFF_TRAITS[t]?.accuracy || 0), 0), 0.2, 0.97);
 }
 
 /** Multiplier from traits for runtime effects (speed, wage, workSpeed). */
-export function traitMul(s, key) {
+export function traitMul(s: Staff, key: 'speed' | 'wage' | 'workSpeed'): number {
   return (s.traits || []).reduce((m, t) => m * (STAFF_TRAITS[t]?.[key] ?? 1), 1);
 }
 
-export const wageOf = (park, s) => Math.round(STAFF[s.role].wage * cfgOf(park).wages * traitMul(s, 'wage'));
+export const wageOf = (park: Park, s: Staff) => Math.round(STAFF[s.role].wage * cfgOf(park).wages * traitMul(s, 'wage'));
 
-export function fire(park, id) {
+export function fire(park: Park, id: number) {
   const i = park.staff.findIndex((s) => s.id === id);
   if (i >= 0) park.staff.splice(i, 1);
 }
 
-function newStaff(role, id, x, y) {
+function newStaff(role: StaffRole, id: number, x: number, y: number): Staff {
   const def = STAFF[role];
   const acc = def.accuracy ? (def.accuracy[0] + def.accuracy[1]) / 2 : 0;
   return {
     id, role, name: '', x, y, nx: x, ny: y, lx: x, ly: y, t: 0, route: null, task: null, busy: 0, chase: null, cool: 0,
-    hp: def.hp, maxHp: def.hp, acc, down: 0,
+    hp: def.hp, maxHp: def.hp, acc, down: 0, traits: [],
   };
 }
 
@@ -685,14 +741,14 @@ function newStaff(role, id, x, y) {
 // Money
 // ---------------------------------------------------------------------------
 
-function earn(park, amount, category) {
+function earn(park: Park, amount: number, category: LedgerCategory) {
   park.cash += amount;
   const t = park.stats.today;
   t.income += amount;
   t[category] = (t[category] || 0) + amount;
 }
 
-function spend(park, amount, category) {
+function spend(park: Park, amount: number, category: LedgerCategory) {
   park.cash -= amount;
   const t = park.stats.today;
   t.expenses += amount;
@@ -703,7 +759,7 @@ function spend(park, amount, category) {
 // Pathfinding
 // ---------------------------------------------------------------------------
 
-function bfs(park, start, allowEntrance = false) {
+function bfs(park: Park, start: number, allowEntrance = false) {
   const n = GRID * GRID;
   const dist = new Int16Array(n).fill(-1);
   const prev = new Int32Array(n).fill(-1);
@@ -728,7 +784,7 @@ function bfs(park, start, allowEntrance = false) {
   return { dist, prev };
 }
 
-function traceRoute(prev, start, goal) {
+function traceRoute(prev: Int32Array, start: number, goal: number) {
   const route = [];
   for (let c = goal; c !== start; c = prev[c]) {
     if (c < 0) return null;
@@ -738,7 +794,7 @@ function traceRoute(prev, start, goal) {
 }
 
 /** Nearest access tile of `obj` from a BFS result, or null if unreachable. */
-function nearestAccess(obj, dist) {
+function nearestAccess(obj: ParkObject, dist: Int16Array) {
   let best = null;
   for (const a of obj._access) if (dist[a] >= 0 && (best === null || dist[a] < dist[best])) best = a;
   return best;
@@ -748,14 +804,14 @@ function nearestAccess(obj, dist) {
 // Simulation
 // ---------------------------------------------------------------------------
 
-export function step(park, dt) {
+export function step(park: Park, dt: number) {
   const prevDay = day(park);
   park.time += dt;
 
   spawnGuests(park, dt);
   for (const g of park.guests) updateGuest(park, g, dt);
   for (const obj of park.objects) {
-    if (obj.queue) updateRide(park, obj, dt);
+    if (isRideObj(obj)) updateRide(park, obj, dt);
     else if (obj.show) updateShow(park, obj, dt);
   }
   for (const s of park.staff) updateStaff(park, s, dt);
@@ -779,7 +835,7 @@ export function step(park, dt) {
   if (day(park) !== prevDay) endDay(park, prevDay);
 }
 
-function spawnGuests(park, dt) {
+function spawnGuests(park: Park, dt: number) {
   if (!park.open || park.locked) return;
   const s = parkStats(park);
   const attraction = 0.06 + s.rides * 0.07 + s.stalls * 0.01 + s.excitement * 0.012;
@@ -796,7 +852,11 @@ function spawnGuests(park, dt) {
   }
 }
 
-function newGuestStats() {
+/** Everything about a guest that isn't set from their arrival (position, needs, money...). */
+type GuestDefaults = Omit<Guest, 'id' | 'name' | 'shirt' | 'x' | 'y' | 'nx' | 'ny' | 'lx' | 'ly' | 't' | 'cash' | 'happy'
+  | 'hunger' | 'thirst' | 'bladder' | 'energy' | 'nausea' | 'pref' | 'thrift' | 'timeIn'>;
+
+function newGuestStats(): GuestDefaults {
   return {
     state: 'walk', target: null, route: null, busy: 0, queueT: 0, queueAt: -1,
     thought: '', thoughtT: 0, litterT: 0, decideIn: 0, ridden: {}, rides: 0, gone: false, leaving: false,
@@ -806,7 +866,7 @@ function newGuestStats() {
   };
 }
 
-function spawnGuest(park, opts = {}) {
+function spawnGuest(park: Park, opts: SpawnOpts = {}) {
   const cfg = cfgOf(park);
   const type = opts.type || weighted(GUEST_TYPES, rand(park));
   const T = GUEST_TYPES[type];
@@ -847,7 +907,7 @@ function spawnGuest(park, opts = {}) {
     g.gang = pick(park, CRIME.gangs);
   } else if (rand(park) < crimeRate) {
     let r = rand(park);
-    for (const [type, share] of Object.entries(CRIME.types)) {
+    for (const [type, share] of Object.entries(CRIME.types) as [CrimeKind, number][]) {
       g.crime = type;
       if ((r -= share) < 0) break;
     }
@@ -862,7 +922,7 @@ function spawnGuest(park, opts = {}) {
   return g;
 }
 
-function think(park, g, text, force = false) {
+function think(park: Park, g: Guest, text: string, force = false) {
   if (g.thoughtT > 0 && !force) return;
   g.thought = text;
   g.thoughtT = 12;
@@ -872,7 +932,7 @@ function think(park, g, text, force = false) {
   }
 }
 
-function startLeaving(park, g, reason) {
+function startLeaving(park: Park, g: Guest, reason?: string) {
   if (g.leaving) return;
   g.leaving = true;
   g.target = null;
@@ -880,7 +940,7 @@ function startLeaving(park, g, reason) {
   if (reason) think(park, g, reason);
 }
 
-function releaseGuest(park, g) {
+function releaseGuest(park: Park, g: Guest | undefined) {
   if (!g) return;
   g.state = 'walk';
   const at = g.queueAt;
@@ -893,7 +953,7 @@ function releaseGuest(park, g) {
   }
 }
 
-function updateGuest(park, g, dt) {
+function updateGuest(park: Park, g: Guest, dt: number) {
   if (g.crime === 'panda') return updatePanda(park, g, dt);
   g.timeIn += dt;
   g.thoughtT -= dt;
@@ -943,11 +1003,11 @@ function updateGuest(park, g, dt) {
     g.queueT += dt;
     g.happy = Math.max(0, g.happy - 0.08 * dt);
     if (g.queueT > 45) {
-      const ride = park.objects.find((o) => o.queue?.includes(g.id));
+      const ride = park.objects.find((o): o is RideObject => isRideObj(o) && o.queue.includes(g.id));
       if (ride) ride.queue.splice(ride.queue.indexOf(g.id), 1);
       releaseGuest(park, g);
       g.happy -= 8;
-      think(park, g, `I've waited too long for ${ride ? rideDef(ride).name : 'this ride'}.`);
+      think(park, g, `I've waited too long for ${ride ? rideDef(ride)!.name : 'this ride'}.`);
     }
   } else if (g.state === 'busy' || g.state === 'sit') {
     g.busy -= dt;
@@ -956,7 +1016,7 @@ function updateGuest(park, g, dt) {
   }
 }
 
-function dropLitter(park, x, y, chance = 0.75) {
+function dropLitter(park: Park, x: number, y: number, chance = 0.75) {
   for (let yy = y - 1; yy <= y + 1; yy++) {
     for (let xx = x - 1; xx <= x + 1; xx++) {
       const o = objectAt(park, xx, yy);
@@ -967,7 +1027,7 @@ function dropLitter(park, x, y, chance = 0.75) {
   if (park.tiles[i] === TILE.PATH && rand(park) < chance) park.litter[i] = Math.min(5, park.litter[i] + 1);
 }
 
-function moveActor(park, a, dt, speed) {
+function moveActor(park: Park, a: Walker, dt: number, speed: number) {
   if (a.nx === a.x && a.ny === a.y) return true; // standing still: ready for a decision
   if (!walkable(park, idx(a.nx, a.ny))) { a.nx = a.x; a.ny = a.y; a.t = 0; return true; }
   a.t += speed * dt;
@@ -979,9 +1039,9 @@ function moveActor(park, a, dt, speed) {
 }
 
 /** Sets the next tile from the route, or wanders. Returns false if stuck. */
-function advance(park, a, allowEntrance = false) {
+function advance(park: Park, a: Walker, allowEntrance = false) {
   if (a.route?.length) {
-    const n = a.route.shift();
+    const n = a.route.shift()!;
     const nx = n % GRID, ny = (n / GRID) | 0;
     if (Math.abs(nx - a.x) + Math.abs(ny - a.y) === 1 && walkable(park, n)) {
       a.nx = nx; a.ny = ny;
@@ -1004,7 +1064,7 @@ function advance(park, a, allowEntrance = false) {
   return true;
 }
 
-function walkGuest(park, g, dt) {
+function walkGuest(park: Park, g: Guest, dt: number) {
   if (!moveActor(park, g, dt, GUEST_SPEED * guestType(g).speed * (g.energy < 20 ? 0.6 : 1))) return;
   const here = idx(g.x, g.y);
   if (!walkable(park, here)) { g.gone = true; return; }
@@ -1014,7 +1074,7 @@ function walkGuest(park, g, dt) {
   decide(park, g, here);
 }
 
-function onArrive(park, g, here) {
+function onArrive(park: Park, g: Guest, here: number) {
   if (park.tiles[here] === TILE.ENTRANCE && g.leaving && !park.locked && g.high <= 0) {
     if (g.crime && g.spotted && rand(park) < CRIME.gateArrestChance) arrest(park, g, 'park security at the gate');
     if (guestType(g).influencer && !g.crime) influencerReview(park, g);
@@ -1024,7 +1084,7 @@ function onArrive(park, g, here) {
   if (!g.map) {
     for (const [dx, dy] of DIRS) {
       const o = objectAt(park, g.x + dx, g.y + dy);
-      if (o && STALLS[o.kind]?.sells === 'info' && o.open && g.cash >= o.price && rand(park) < 0.6) {
+      if (o && hasTill(o) && STALLS[o.kind]?.sells === 'info' && o.open && g.cash >= o.price && rand(park) < 0.6) {
         g.map = true;
         g.cash -= o.price;
         if (o.price) earn(park, o.price, 'shops');
@@ -1063,7 +1123,7 @@ function onArrive(park, g, here) {
   }
 }
 
-function decide(park, g, here) {
+function decide(park: Park, g: Guest, here: number) {
   if (g.leaving && (g.high > 0 || park.locked)) {
     // Too high to find the exit, or the exits are sealed: wander.
     g.route = null;
@@ -1099,15 +1159,14 @@ function decide(park, g, here) {
       g.decideIn = 2 + Math.floor(rand(park) * 4);
       pickGoal(park, g, here);
       if (g.leaving || g.state !== 'walk') return decide(park, g, here);
-      if (g.target && getObject(park, g.target)._access.includes(here)) {
-        return interact(park, g, getObject(park, g.target), here);
-      }
+      const tgt = g.target ? getObject(park, g.target) : null;
+      if (tgt && tgt._access.includes(here)) return interact(park, g, tgt, here);
     }
   }
   advance(park, g);
 }
 
-const NEED_THOUGHTS = {
+const NEED_THOUGHTS: Record<string, string> = {
   restroom: "I can't find a restroom!",
   drink: "I can't find anything to drink.",
   firstaid: "I'm hurt and there's no first aid here!",
@@ -1115,17 +1174,17 @@ const NEED_THOUGHTS = {
   umbrella: 'I wish I could buy an umbrella.',
 };
 
-function pickGoal(park, g, here) {
+function pickGoal(park: Park, g: Guest, here: number) {
   if (g.happy < 20) return startLeaving(park, g, "I'm not having fun. I'm going home.");
   if (g.energy < 8) return startLeaving(park, g, "I'm exhausted. Time to go home.");
   if (g.timeIn > DAY_SECONDS * 2.2) return startLeaving(park, g, 'What a day! Heading home.');
-  const hasShop = (sells) => park.objects.some((o) => STALLS[o.kind]?.sells === sells && o.open && o._access.length);
+  const hasShop = (sells: string) => park.objects.some((o) => STALLS[o.kind]?.sells === sells && o.open && o._access.length);
   if (g.cash < 8 && !g.atmUsed && hasShop('atm')) {
     // Low on cash but there's a cash machine: top up instead of leaving.
   } else if (g.cash < 1 && rand(park) < 0.4) return startLeaving(park, g, "I'm out of money.");
 
   const W = weatherOf(park), T = guestType(g);
-  let need = null;
+  let need: string | null = null; // a shop's `sells`, or 'seat'
   if (g.injured) need = 'firstaid';
   else if (g.bladder > 70) need = 'restroom';
   else if (g.cash < 8 && !g.atmUsed && hasShop('atm')) need = 'atm';
@@ -1136,16 +1195,16 @@ function pickGoal(park, g, here) {
   else if (!g.souvenir && g.happy > 60 && g.cash > 15 && rand(park) < T.souvenir * 0.15) need = 'souvenir';
 
   const { dist, prev } = bfs(park, here);
-  let best = null, bestScore = -Infinity, bestGoal = -1;
+  let best: ParkObject | null = null, bestScore = -Infinity, bestGoal = -1;
   for (const obj of park.objects) {
     if (!obj._access.length) continue;
-    let score;
+    let score: number;
     if (need) {
       if (need === 'seat' ? !SCENERY[obj.kind]?.seat : STALLS[obj.kind]?.sells !== need || !obj.open) continue;
       score = 0;
     } else {
       const def = rideDef(obj);
-      if (!def || !obj.open || obj.broken || def.intensity > g.pref + 2 || obj.price > g.cash) continue;
+      if (!def || !isRideObj(obj) || !obj.open || obj.broken || def.intensity > g.pref + 2 || obj.price > g.cash) continue;
       score = def.excitement * 10 - (g.ridden[obj.id] || 0) * 18 - obj.queue.length * 1.5 + rand(park) * 12;
     }
     const goal = nearestAccess(obj, dist);
@@ -1165,18 +1224,18 @@ function pickGoal(park, g, here) {
   g.route = traceRoute(prev, here, bestGoal);
 }
 
-function rideValue(park, def, g) {
+function rideValue(park: Park, def: RideDef, g: Guest) {
   return (1.5 + def.excitement * 1.05) * (0.75 + g.thrift * 0.5) * cfgOf(park).priceTolerance;
 }
 
-function interact(park, g, obj, here) {
+function interact(park: Park, g: Guest, obj: ParkObject, here: number) {
   g.target = null;
   g.route = null;
   if (g.heist === obj.id) return commitHeist(park, g, obj);
   if (obj.kind === 'retribution') return watchShow(park, g, obj);
   const ride = rideDef(obj);
-  const stall = STALLS[obj.kind];
-  if (ride) {
+  const stall: StallDef | undefined = STALLS[obj.kind];
+  if (ride && isRideObj(obj)) {
     if (!obj.open || obj.broken) return think(park, g, `${ride.name} isn't running.`);
     if (obj.price > g.cash) return think(park, g, `I can't afford ${ride.name}.`);
     if (obj.price > rideValue(park, ride, g)) {
@@ -1191,7 +1250,7 @@ function interact(park, g, obj, here) {
     g.state = 'queue';
     g.queueT = 0;
     g.queueAt = here;
-  } else if (stall) {
+  } else if (stall && hasTill(obj)) {
     if (!obj.open || obj.broken) return think(park, g, `${stall.name} has been smashed up.`);
     if (obj.price > g.cash) return think(park, g, `I can't afford ${stall.name}.`);
     const heat = stall.snack && park.weather.type === 'heatwave' ? 1.5 : 1;
@@ -1241,8 +1300,8 @@ function interact(park, g, obj, here) {
   }
 }
 
-function updateRide(park, obj, dt) {
-  const def = rideDef(obj);
+function updateRide(park: Park, obj: RideObject, dt: number) {
+  const def = rideDef(obj)!;
   if (obj.broken || !obj.open) {
     if (obj.queue.length) {
       for (const gid of obj.queue.splice(0)) {
@@ -1263,7 +1322,7 @@ function updateRide(park, obj, dt) {
     obj.wait += dt;
     if (obj.queue.length >= def.capacity || obj.wait >= 4) {
       obj.riders = obj.queue.splice(0, def.capacity);
-      for (const gid of obj.riders) park._guestById.get(gid).state = 'ride';
+      for (const gid of obj.riders) { const rider = park._guestById.get(gid); if (rider) rider.state = 'ride'; }
       obj.phase = 'running';
       obj.timer = def.duration;
       obj.wait = 0;
@@ -1298,7 +1357,7 @@ function updateRide(park, obj, dt) {
   }
 }
 
-function updateStaff(park, s, dt) {
+function updateStaff(park: Park, s: Staff, dt: number) {
   if (s.down > 0) {
     s.down -= dt;
     if (s.down <= 0) { s.down = 0; s.hp = s.maxHp; }
@@ -1357,20 +1416,21 @@ function updateStaff(park, s, dt) {
   advance(park, s);
 }
 
-function finishStaffJob(park, s) {
-  if (s.role === 'janitor' && s.job >= 0) { park.litter[s.job] = 0; park.stains[s.job] = 0; }
+function finishStaffJob(park: Park, s: Staff) {
+  const job = s.job ?? -1;
+  if (s.role === 'janitor' && job >= 0) { park.litter[job] = 0; park.stains[job] = 0; }
   if (s.role === 'mechanic') {
-    const ride = getObject(park, s.job);
+    const ride = getObject(park, job);
     if (ride?.broken) {
       ride.broken = false;
-      park._events.push({ type: 'info', text: `${itemDef(ride.kind).name} has been repaired.` });
+      park._events.push({ type: 'info', text: `${objName(ride)} has been repaired.` });
     }
     s.task = null;
   }
   s.job = -1;
 }
 
-function updateRating(park) {
+function updateRating(park: Park) {
   const s = parkStats(park);
   const happy = s.guests ? s.avgHappy : 60;
   const target = 120 + happy * 4 + Math.min(s.rides, 10) * 28 + Math.min(s.beauty, 120)
@@ -1380,7 +1440,7 @@ function updateRating(park) {
   park.rating += (clamp(target, 0, 999) - park.rating) * 0.08;
 }
 
-function checkObjectives(park) {
+function checkObjectives(park: Park) {
   const s = parkStats(park);
   for (const o of OBJECTIVES) {
     if (!park.objectives.includes(o.id) && o.test(s)) {
@@ -1390,7 +1450,7 @@ function checkObjectives(park) {
   }
 }
 
-function endDay(park, finishedDay) {
+function endDay(park: Park, finishedDay: number) {
   maybeStartRaid(park, finishedDay + 1);
   for (const s of park.staff) spend(park, wageOf(park, s), 'wages');
   for (const o of park.objects) {
@@ -1411,12 +1471,13 @@ function endDay(park, finishedDay) {
 // Crime & security
 // ---------------------------------------------------------------------------
 
-const dist2 = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+interface Point { x: number; y: number }
+const dist2 = (a: Point, b: Point): number => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
 
 /** How well a tile is covered by security. */
-function coverage(park, x, y) {
+function coverage(park: Park, x: number, y: number): Coverage {
   const here = { x: x + 0.5, y: y + 0.5 };
-  let guard = null, guardD = Infinity;
+  let guard: Staff | null = null, guardD = Infinity;
   for (const s of park.staff) {
     if (s.role !== 'guard') continue;
     const d = dist2(actorPos(s), here);
@@ -1433,19 +1494,20 @@ function coverage(park, x, y) {
   return { guard, guardD: Math.sqrt(guardD), camera, lamp };
 }
 
-function logIncident(park, type, text) {
+function logIncident(park: Park, type: Incident['type'], text: string) {
   park.incidents.unshift({ type, text, day: day(park) });
   if (park.incidents.length > 30) park.incidents.length = 30;
-  if (CRIME.safetyHit[type]) {
+  const hit = (CRIME.safetyHit as Record<string, number>)[type];
+  if (hit) {
     park.stats.crimes++;
     park.stats.today.crimeCount++;
-    park.safety = Math.max(0, park.safety - CRIME.safetyHit[type]);
+    park.safety = Math.max(0, park.safety - hit);
   }
 }
 
-function victimNear(park, g) {
+function victimNear(park: Park, g: Guest) {
   const me = actorPos(g);
-  let best = null, bestD = 2.25;
+  let best: Guest | null = null, bestD = 2.25;
   for (const v of park.guests) {
     if (v === g || v.crime || v.gone || (v.state !== 'walk' && v.state !== 'queue' && v.state !== 'sit')) continue;
     const d = dist2(actorPos(v), me);
@@ -1455,7 +1517,7 @@ function victimNear(park, g) {
 }
 
 /** Decides whether a criminal acts now, based on security nearby. */
-function planCrime(park, g) {
+function planCrime(park: Park, g: Guest) {
   const cov = coverage(park, g.x, g.y);
   let chance = 1;
   const deterR = cov.guard ? CRIME.guardDeterRadius + (cov.guard.traits || []).reduce((n, t) => n + (STAFF_TRAITS[t].deter || 0), 0) : 0;
@@ -1471,10 +1533,10 @@ function planCrime(park, g) {
 
   if (g.crime === 'robber') {
     // Pick the busiest reachable till to hit.
-    const targets = park.objects.filter((o) => o.stats && o.open && o._access.length && o.stats.revenue > 0);
+    const targets = park.objects.filter((o): o is ShopObject => hasTill(o) && o.open && o._access.length > 0 && o.stats.revenue > 0);
     if (!targets.length) { g.crimeT = 20; return; }
     targets.sort((a, b) => b.stats.revenue - a.stats.revenue);
-    const t = targets[Math.floor(rand(park) * Math.min(3, targets.length))];
+    const t = targets[Math.floor(rand(park) * Math.min(3, targets.length))]!;
     g.heist = t.id;
     g.target = t.id;
     g.route = null;
@@ -1489,7 +1551,7 @@ function planCrime(park, g) {
   else commitAssault(park, g, victim, cov);
 }
 
-function commitTheft(park, g, v, cov) {
+function commitTheft(park: Park, g: Guest, v: Guest, cov: Coverage) {
   const amount = Math.min(v.cash, Math.round(5 + rand(park) * 30));
   if (amount <= 0) { g.crimeT = 4; return; }
   v.cash -= amount;
@@ -1502,7 +1564,7 @@ function commitTheft(park, g, v, cov) {
   afterCrime(park, g, cov, false);
 }
 
-function commitAssault(park, g, v, cov) {
+function commitAssault(park: Park, g: Guest, v: Guest, cov: Coverage) {
   const firstAid = park.objects.some((o) => o.kind === 'firstaid' && o.open);
   const fatal = rand(park) < CRIME.homicideChance * (firstAid ? CRIME.firstAidHomicideFactor : 1);
   bleed(park, v, fatal ? 3 : 1);
@@ -1527,9 +1589,9 @@ function commitAssault(park, g, v, cov) {
   afterCrime(park, g, cov, true);
 }
 
-function commitHeist(park, g, obj) {
+function commitHeist(park: Park, g: Guest, obj: ParkObject) {
   g.heist = null;
-  const name = itemDef(obj.kind).name;
+  const name = objName(obj);
   const amount = Math.round(clamp(park.stats.today.income * 0.35, 150, 3000));
   const taken = Math.min(amount, Math.max(0, Math.round(park.cash)));
   if (taken <= 0) { startLeaving(park, g); return; }
@@ -1544,28 +1606,28 @@ function commitHeist(park, g, obj) {
 }
 
 /** Witnesses and cameras may identify the culprit; guards give chase. */
-function afterCrime(park, g, cov, flee) {
+function afterCrime(park: Park, g: Guest, cov: Coverage, flee: boolean) {
   g.crimes++;
   g.crimeT = 15 + rand(park) * 20;
-  const guardNear = cov.guard && cov.guardD <= CRIME.guardChaseRadius;
-  if (guardNear || (cov.camera && rand(park) < CRIME.cameraSpotChance)) g.spotted = true;
-  if (guardNear && !cov.guard.chase) {
-    cov.guard.chase = g.id;
-    cov.guard.route = null;
+  const guard = cov.guard && cov.guardD <= CRIME.guardChaseRadius ? cov.guard : null;
+  if (guard || (cov.camera && rand(park) < CRIME.cameraSpotChance)) g.spotted = true;
+  if (guard && !guard.chase) {
+    guard.chase = g.id;
+    guard.route = null;
   }
   if (flee || g.crimes >= (g.crime === 'dealer' ? 8 : 3)) startLeaving(park, g);
 }
 
-function arrest(park, g, by) {
+function arrest(park: Park, g: Guest, by: string) {
   for (const o of park.objects) {
-    if (o.queue?.includes(g.id)) o.queue.splice(o.queue.indexOf(g.id), 1);
+    if (isRideObj(o) && o.queue.includes(g.id)) o.queue.splice(o.queue.indexOf(g.id), 1);
   }
   g.gone = true;
   g.arrested = true;
   park.stats.arrests++;
   park.safety = Math.min(100, park.safety + 2);
   if (g.heistLoot && g.loot) earn(park, g.loot, 'crime');
-  const what = CRIME_LABEL[g.crime];
+  const what = g.crime ? CRIME_LABEL[g.crime] : 'suspect';
   const recovered = g.heistLoot && g.loot ? ` $${Math.round(g.loot).toLocaleString()} recovered.` : '';
   logIncident(park, 'arrest', `${g.name}, a ${what}, was arrested by ${by}.${recovered}`);
   park._events.push({ type: 'goal', text: `${g.name} (${what}) arrested!${recovered}` });
@@ -1574,7 +1636,7 @@ function arrest(park, g, by) {
 }
 
 /** Guard behaviour on arriving at a tile. Returns true if it handled movement. */
-function guardStep(park, s, here) {
+function guardStep(park: Park, s: Staff, here: number) {
   const pos = { x: s.x + 0.5, y: s.y + 0.5 };
   // Arrest any identified criminal within reach.
   for (const g of park.guests) {
@@ -1593,11 +1655,11 @@ function guardStep(park, s, here) {
 }
 
 /** Adds blood to a path tile (no-op when gore is off). */
-function stain(park, i, amount) {
+function stain(park: Park, i: number, amount: number) {
   if (cfgOf(park).gore && park.tiles[i] !== TILE.GRASS) park.stains[i] = Math.min(3, park.stains[i] + amount);
 }
 
-function bleed(park, v, amount) {
+function bleed(park: Park, v: Guest, amount: number) {
   const i = idx(v.x, v.y);
   stain(park, i, amount);
   const p = actorPos(v);
@@ -1605,7 +1667,7 @@ function bleed(park, v, amount) {
 }
 
 /** Transient visual effects for the renderer (not saved). */
-function fx(park, effect) {
+function fx(park: Park, effect: Fx) {
   if (effect.type === 'blood' && !cfgOf(park).gore) return;
   park._fx = park._fx || [];
   if (park._fx.length < 200) park._fx.push(effect);
@@ -1615,10 +1677,10 @@ function fx(park, effect) {
 // Pandemonium heist crew
 // ---------------------------------------------------------------------------
 
-const randIn = (park, [lo, hi]) => lo + rand(park) * (hi - lo);
-export const activePandas = (park) => park.guests.filter((g) => g.crime === 'panda' && !g.gone);
+const randIn = (park: Park, [lo, hi]: readonly [number, number] | number[]): number => lo! + rand(park) * (hi! - lo!);
+export const activePandas = (park: Park) => park.guests.filter((g) => g.crime === 'panda' && !g.gone);
 
-function maybeStartRaid(park, newDay) {
+function maybeStartRaid(park: Park, newDay: number) {
   const mode = cfgOf(park).pandemonium;
   if (mode === 'off') return;
   const pd = park.pandemonium;
@@ -1628,7 +1690,7 @@ function maybeStartRaid(park, newDay) {
 }
 
 /** Starts a raid right away. Exported for tests and debugging. */
-export function startRaid(park) {
+export function startRaid(park: Park) {
   if (park.raid) return false;
   const paths = [];
   for (let i = 0; i < park.tiles.length; i++) if (park.tiles[i] === TILE.PATH) paths.push(i);
@@ -1640,10 +1702,10 @@ export function startRaid(park) {
   const names = [...PANDEMONIUM.names];
   for (let k = 0; k < size; k++) {
     // They infiltrate everywhere: each member pops up somewhere different.
-    const at = paths[Math.floor(rand(park) * paths.length)];
+    const at = paths[Math.floor(rand(park) * paths.length)]!;
     const x = at % GRID, y = (at / GRID) | 0;
     const name = names.splice(Math.floor(rand(park) * names.length), 1)[0] || `Panda #${k + 1}`;
-    const g = {
+    const g: Guest = {
       ...newGuestStats(),
       id: park.nextId++, name, shirt: '#ffffff',
       x, y, nx: x, ny: y, lx: x, ly: y, t: 0,
@@ -1660,7 +1722,7 @@ export function startRaid(park) {
   return true;
 }
 
-function updatePanda(park, g, dt) {
+function updatePanda(park: Park, g: Guest, dt: number) {
   g.thoughtT -= dt;
   if (g.state === 'downed') {
     g.busy -= dt;
@@ -1729,28 +1791,28 @@ function updatePanda(park, g, dt) {
   advance(park, g);
 }
 
-function robTill(park, g, obj) {
+function robTill(park: Park, g: Guest, obj: ParkObject) {
   const def = itemDef(obj.kind);
   const taken = Math.min(Math.round(randIn(park, PANDEMONIUM.tillLoot)), Math.max(0, Math.round(park.cash)));
   if (taken > 0) {
     spend(park, taken, 'crime');
     g.loot += taken;
-    park.raid.loot += taken;
+    if (park.raid) park.raid.loot += taken;
     g.record.robbery++;
     g.record.stolen += taken;
   }
   const smashed = rand(park) < PANDEMONIUM.sabotageChance && 'broken' in obj;
   if (smashed) {
     obj.broken = true;
-    if (obj.queue) for (const gid of obj.queue.splice(0)) releaseGuest(park, park._guestById.get(gid));
+    if (isRideObj(obj)) for (const gid of obj.queue.splice(0)) releaseGuest(park, park._guestById.get(gid));
   }
-  logIncident(park, 'heist', `Pandemonium hit ${def.name}: $${taken.toLocaleString()} stolen${smashed ? ' and the place was smashed up' : ''}.`);
-  park._events.push({ type: 'warn', text: `🐼 ${g.name} robbed ${def.name}${taken ? ` of $${taken.toLocaleString()}` : ''}${smashed ? ' and smashed it' : ''}!` });
+  logIncident(park, 'heist', `Pandemonium hit ${objName(obj)}: $${taken.toLocaleString()} stolen${smashed ? ' and the place was smashed up' : ''}.`);
+  park._events.push({ type: 'warn', text: `🐼 ${g.name} robbed ${objName(obj)}${taken ? ` of $${taken.toLocaleString()}` : ''}${smashed ? ' and smashed it' : ''}!` });
   g.state = 'busy';
   g.busy = 1.5;
 }
 
-function pandaEscapes(park, g) {
+function pandaEscapes(park: Park, g: Guest) {
   g.gone = true;
   if (!park.raid) return;
   park.raid.escaped++;
@@ -1759,7 +1821,7 @@ function pandaEscapes(park, g) {
   logIncident(park, 'raid', `${g.name} escaped with $${Math.round(g.loot).toLocaleString()}.`);
 }
 
-function capturePanda(park, g) {
+function capturePanda(park: Park, g: Guest) {
   g.gone = true;
   takeIntoCustody(park, g, 'the Hot Dog Squad');
   park.pandemonium.captured++;
@@ -1770,7 +1832,7 @@ function capturePanda(park, g) {
   park._events.push({ type: 'goal', text: `🌭 ${g.name} captured by the Hot Dog Squad!` });
 }
 
-function checkRaidOver(park) {
+function checkRaidOver(park: Park) {
   const raid = park.raid;
   if (!raid || activePandas(park).length) return;
   const pd = park.pandemonium;
@@ -1788,7 +1850,7 @@ function checkRaidOver(park) {
   }
 }
 
-function squadShoot(park, s, dt) {
+function squadShoot(park: Park, s: Staff, dt: number) {
   s.cool = Math.max(0, (s.cool || 0) - dt);
   if (s.cool > 0 || !park.raid) return;
   const me = actorPos(s);
@@ -1804,7 +1866,7 @@ function squadShoot(park, s, dt) {
   const to = actorPos(target);
   fx(park, { type: 'shot', x0: me.x, y0: me.y, x1: to.x, y1: to.y, hit });
   if (!hit) return;
-  target.hp--;
+  target.hp = (target.hp ?? 1) - 1;
   if (target.hp <= 0) {
     target.state = 'downed';
     target.busy = PANDEMONIUM.downedSeconds;
@@ -1815,7 +1877,7 @@ function squadShoot(park, s, dt) {
 }
 
 /** Pandas throw bamboo at nearby security staff. */
-function pandaFight(park, g, dt) {
+function pandaFight(park: Park, g: Guest, dt: number) {
   g.cool = Math.max(0, (g.cool || 0) - dt);
   if (g.cool > 0) return;
   const me = actorPos(g);
@@ -1827,7 +1889,7 @@ function pandaFight(park, g, dt) {
   }
   if (!target) return;
   g.cool = PANDEMONIUM.throwCooldown;
-  const hit = rand(park) < g.acc;
+  const hit = rand(park) < (g.acc ?? 0.5);
   const to = actorPos(target);
   fx(park, { type: 'bamboo', x0: me.x, y0: me.y, x1: to.x, y1: to.y, hit });
   if (!hit) return;
@@ -1849,12 +1911,12 @@ function pandaFight(park, g, dt) {
 }
 
 /** An officer dies in the line of duty: insurance, burial and a memorial. */
-function killOfficer(park, s, killer) {
+function killOfficer(park: Park, s: Staff, killer: Guest) {
   const pos = actorPos(s);
   stain(park, idx(s.x, s.y), 3);
   fx(park, { type: 'blood', x: pos.x, y: pos.y, amount: 3 });
   park.staff.splice(park.staff.indexOf(s), 1);
-  const payout = PANDEMONIUM.lifeInsurance[s.role] || 0;
+  const payout = (PANDEMONIUM.lifeInsurance as Partial<Record<StaffRole, number>>)[s.role] || 0;
   if (payout) spend(park, payout, 'insurance');
   park.fallen.push({ name: s.name, role: s.role, by: killer.name, day: day(park), payout });
   const memorial = buryFallen(park);
@@ -1869,7 +1931,7 @@ function killOfficer(park, s, killer) {
 }
 
 /** Adds a grave to the memorial, creating it on free ground near the entrance. */
-function buryFallen(park) {
+function buryFallen(park: Park) {
   let m = park.objects.find((o) => o.kind === 'memorial');
   if (!m) {
     const spot = memorialSpot(park);
@@ -1883,8 +1945,8 @@ function buryFallen(park) {
   return m;
 }
 
-function memorialSpot(park) {
-  const free = (x, y, clear) => {
+function memorialSpot(park: Park) {
+  const free = (x: number, y: number, clear: ParkObject[]): boolean => {
     for (let yy = y; yy < y + 2; yy++) {
       for (let xx = x; xx < x + 2; xx++) {
         if (!inBounds(xx, yy)) return false;
@@ -1898,11 +1960,11 @@ function memorialSpot(park) {
     }
     return true;
   };
-  let best = null;
+  let best: { x: number; y: number; clear: ParkObject[]; score: number } | null = null;
   for (let y = 0; y < GRID - 1; y++) {
     for (let x = 0; x < GRID - 1; x++) {
       if (Math.abs(x + 0.5 - ENTRANCE.x) < 3 && y + 2 >= ENTRANCE.y - 1) continue; // keep the gate clear
-      const clear = [];
+      const clear: ParkObject[] = [];
       if (!free(x, y, clear)) continue;
       // Prefer a spot beside a path, close to the entrance, needing little clearing.
       let pathNear = false;
@@ -1917,7 +1979,7 @@ function memorialSpot(park) {
 }
 
 /** Squad officers hunt the nearest panda during a raid. */
-function squadStep(park, s, here) {
+function squadStep(park: Park, s: Staff, here: number) {
   if (!park.raid) return false;
   const pandas = park.guests.filter((g) => g.crime === 'panda' && !g.gone && g.state !== 'downed');
   if (!pandas.length) return false;
@@ -1934,7 +1996,7 @@ function squadStep(park, s, here) {
 }
 
 /** Stages a public execution of captured Pandemonium members. */
-export function execute(park, id, mode) {
+export function execute(park: Park, id: number, mode: string) {
   const rig = getObject(park, id);
   if (!rig || rig.kind !== 'retribution') return { ok: false, reason: 'That is not a Retribution Rig.' };
   if (!cfgOf(park).executions) return { ok: false, reason: 'Executions are turned off in this park\'s rules.' };
@@ -1955,12 +2017,12 @@ export function execute(park, id, mode) {
   return { ok: true };
 }
 
-export function setRigMode(park, id, mode) {
+export function setRigMode(park: Park, id: number, mode: string) {
   const rig = getObject(park, id);
   if (rig?.kind === 'retribution' && !rig.show) rig.pit = mode === 'water' ? 'water' : 'fire';
 }
 
-function watchShow(park, g, rig) {
+function watchShow(park: Park, g: Guest, rig: ParkObject) {
   if (!rig.show) return;
   if (g.cash >= PANDEMONIUM.spectatorFee) {
     g.cash -= PANDEMONIUM.spectatorFee;
@@ -1972,8 +2034,9 @@ function watchShow(park, g, rig) {
   think(park, g, pick(park, ['Get those pandas!', "That's what you get for robbing us!", 'Brutal. I love it.', 'Justice!']));
 }
 
-function updateShow(park, rig, dt) {
+function updateShow(park: Park, rig: ParkObject, dt: number) {
   const show = rig.show;
+  if (!show) return;
   const per = PANDEMONIUM.showSecondsPerVictim;
   const before = Math.floor((show.t - per * 0.75) / per);
   show.t += dt;
@@ -1991,25 +2054,25 @@ function updateShow(park, rig, dt) {
   park.safety = 100;
   park._events.push({ type: 'goal', text: `Justice served. ${show.spectators} spectators cheered. Pandemonium will think twice.` });
   park.pandemonium.nextRaidDay = Math.max(park.pandemonium.nextRaidDay, day(park) + PANDEMONIUM.cooldownDays + 1);
-  if (park.captives.length) execute(park, rig.id, rig.pit); // more on death row: next show
+  if (park.captives.length) execute(park, rig.id, rig.pit ?? 'fire'); // more on death row: next show
 }
 
 // ---------------------------------------------------------------------------
 // Drugs & gangs
 // ---------------------------------------------------------------------------
 
-export const CRIME_LABEL = {
+export const CRIME_LABEL: Record<CrimeKind, string> = {
   pickpocket: 'pickpocket', brawler: 'violent offender', robber: 'robber', dealer: 'drug dealer', panda: 'Pandemonium raider',
 };
 
-function getHigh(park, v) {
+function getHigh(park: Park, v: Guest) {
   v.high = randIn(park, CRIME.highSeconds);
   v.happy = Math.min(100, v.happy + 10);
   park.stats.drugDeals++;
   think(park, v, 'Whoa... everything is so colorful.', true);
 }
 
-function commitDeal(park, g, v, cov) {
+function commitDeal(park: Park, g: Guest, v: Guest, cov: Coverage) {
   if (!cfgOf(park).drugs) { g.crimeT = 30; return; }
   if (v.high > 0 || v.cash < CRIME.dealPrice[0]) { g.crimeT = 4; return; }
   const accept = CRIME.dealAcceptBase + (100 - v.happy) / 200;
@@ -2028,13 +2091,13 @@ function commitDeal(park, g, v, cov) {
   afterCrime(park, g, cov, false);
 }
 
-function vendorDeal(park, g, obj) {
+function vendorDeal(park: Park, g: Guest, obj: ParkObject) {
   const def = STALLS[obj.kind];
   const accept = CRIME.dealAcceptBase + (100 - g.happy) / 200;
   if (rand(park) >= accept) { think(park, g, `The ${def.name} vendor offered me something... not on the menu.`); return; }
   const price = Math.min(g.cash, Math.round(randIn(park, CRIME.dealPrice)));
   g.cash -= price;
-  obj.deals++;
+  obj.deals = (obj.deals ?? 0) + 1;
   getHigh(park, g);
   logIncident(park, 'drugs', `Drugs were sold under the counter at ${def.name}.`);
   const cov = coverage(park, obj.x, obj.y);
@@ -2046,7 +2109,7 @@ function vendorDeal(park, g, obj) {
 }
 
 /** Replaces a stall's vendor, ending any under-the-counter dealing. */
-export function replaceVendor(park, id) {
+export function replaceVendor(park: Park, id: number) {
   const obj = getObject(park, id);
   if (!obj || !('corrupt' in obj)) return { ok: false, reason: 'No vendor to replace.' };
   spend(park, CRIME.replaceVendorCost, 'wages');
@@ -2055,7 +2118,7 @@ export function replaceVendor(park, id) {
   return { ok: true, wasCorrupt: was };
 }
 
-function comeDown(park, g) {
+function comeDown(park: Park, g: Guest) {
   g.high = 0;
   if (g.crime || rand(park) >= CRIME.gangRecruitChance) {
     think(park, g, 'Ugh. What happened? Where am I?');
@@ -2074,16 +2137,16 @@ function comeDown(park, g) {
 // Custody & sentencing
 // ---------------------------------------------------------------------------
 
-export const knownSuspects = (park) => park.guests.filter((g) => g.crime && !g.gone && (g.spotted || g.crime === 'panda'));
+export const knownSuspects = (park: Park) => park.guests.filter((g) => g.crime && !g.gone && (g.spotted || g.crime === 'panda'));
 
-function takeIntoCustody(park, g, by) {
+function takeIntoCustody(park: Park, g: Guest, by: string) {
   park.custody.push({
-    id: g.id, name: g.name, kind: g.crime, gang: g.gang, record: { ...g.record }, by, day: day(park),
+    id: g.id, name: g.name, kind: g.crime ?? 'pickpocket', gang: g.gang, record: { ...g.record }, by, day: day(park),
   });
   park._events.push({ type: 'custody', text: `${g.name} is in custody awaiting your decision.` });
 }
 
-export function fineFor(c) {
+export function fineFor(c: CustodyCase): number {
   if (c.kind === 'panda') return CRIME.pandaFine;
   return Math.round(CRIME.fineBase + offences(c.record) * CRIME.finePerOffence + c.record.stolen * CRIME.fineStolenMultiplier);
 }
@@ -2092,7 +2155,7 @@ export function fineFor(c) {
  * Decides the fate of someone in custody.
  * verdict: 'release' | 'fine' | 'execute' (mode: 'fire' | 'water').
  */
-export function sentence(park, id, verdict, mode = 'fire') {
+export function sentence(park: Park, id: number, verdict: 'release' | 'fine' | 'execute', mode = 'fire') {
   const i = park.custody.findIndex((c) => c.id === id);
   if (i < 0) return { ok: false, reason: 'Nobody by that ID is in custody.' };
   const c = park.custody[i];
@@ -2112,7 +2175,7 @@ export function sentence(park, id, verdict, mode = 'fire') {
     return { ok: true, fine };
   }
   park.captives.push({ name: c.name });
-  if (!rig.show) {
+  if (rig && !rig.show) {
     const res = execute(park, rig.id, mode);
     if (!res.ok) return { ok: true, queued: true, reason: res.reason };
     return { ok: true };
@@ -2124,7 +2187,7 @@ export function sentence(park, id, verdict, mode = 'fire') {
 // Barbed wire perimeter
 // ---------------------------------------------------------------------------
 
-export function installFence(park) {
+export function installFence(park: Park) {
   if (park.fence) return { ok: false, reason: 'The fence is already installed.' };
   if (park.cash < CRIME.fenceCost) return { ok: false, reason: 'Not enough cash', cash: true };
   spend(park, CRIME.fenceCost, 'construction');
@@ -2133,7 +2196,7 @@ export function installFence(park) {
   return { ok: true };
 }
 
-export function setLocked(park, locked) {
+export function setLocked(park: Park, locked: boolean) {
   if (!park.fence) return { ok: false, reason: 'Install barbed wire fencing first.' };
   park.locked = !!locked;
   for (const a of [...park.guests, ...park.staff]) a.route = null;
@@ -2147,20 +2210,31 @@ export function setLocked(park, locked) {
 // Custom coasters
 // ---------------------------------------------------------------------------
 
+/** Custom coasters have a track. */
+export const isCoaster = (o: ParkObject | null | undefined): o is CoasterObject => !!o && o.kind === 'custom' && !!o.track;
+
+/** Looks up a custom coaster by id. */
+const getCoaster = (park: Park, id: number): CoasterObject | null => {
+  const o = getObject(park, id);
+  return isCoaster(o) ? o : null;
+};
+
 /** Recomputes a custom coaster's layout, footprint, and (if open) physics. */
-function refreshCoaster(obj) {
-  const start = { x: obj.x, y: obj.y, dir: obj.track.dir };
+function refreshCoaster(obj: CoasterObject) {
+  const start = coasterStart(obj);
   const lay = Coaster.layout(start, obj.track.pieces);
-  const seen = new Set();
-  obj._cells = [];
-  obj._stationCells = [];
+  const seen = new Set<number>();
+  const cells: [number, number][] = [];
+  const stationCells: [number, number][] = [];
   for (const seg of lay.segs) {
     for (const c of seg.cells) {
-      if (seg.type === 'station') obj._stationCells.push([c.x, c.y]);
+      if (seg.type === 'station') stationCells.push([c.x, c.y]);
       const k = c.y * GRID + c.x;
-      if (!seen.has(k)) { seen.add(k); obj._cells.push([c.x, c.y]); }
+      if (!seen.has(k)) { seen.add(k); cells.push([c.x, c.y]); }
     }
   }
+  obj._cells = cells;
+  obj._stationCells = stationCells;
   obj._layout = lay;
   obj._version = (obj._version || 0) + 1;
   obj._design = Coaster.isComplete(start, obj.track.pieces) ? Coaster.simulate(start, obj.track.pieces) : null;
@@ -2168,7 +2242,7 @@ function refreshCoaster(obj) {
   if (obj._design && !obj._design.ok && !obj.building) { obj.building = true; obj.open = false; }
 }
 
-function defFromDesign(obj) {
+function defFromDesign(obj: CoasterObject): RideDef {
   const d = obj._design?.ok ? obj._design : null;
   const n = obj.track.pieces.length;
   return {
@@ -2184,11 +2258,11 @@ function defFromDesign(obj) {
   };
 }
 
-export const coasterStart = (obj) => ({ x: obj.x, y: obj.y, dir: obj.track.dir });
-export const coasterComplete = (obj) => Coaster.isComplete(coasterStart(obj), obj.track.pieces);
+export const coasterStart = (obj: CoasterObject) => ({ x: obj.x, y: obj.y, dir: obj.track.dir });
+export const coasterComplete = (obj: CoasterObject): boolean => Coaster.isComplete(coasterStart(obj), obj.track.pieces);
 
 /** Places a new coaster's station and opens it for building. */
-export function startCoaster(park, x, y, dir) {
+export function startCoaster(park: Park, x: number, y: number, dir: number): Result<{ obj: CoasterObject }> {
   if (!inBounds(x, y)) return { ok: false, reason: 'Out of bounds' };
   const i = idx(x, y);
   if (park.tiles[i] !== TILE.GRASS || park._objAt[i]) return { ok: false, reason: 'Something is in the way' };
@@ -2199,7 +2273,7 @@ export function startCoaster(park, x, y, dir) {
   const obj = makeObject('custom', park.nextId++, x, y, cost, {
     track: { dir: ((dir % 4) + 4) % 4, pieces: ['station'] }, building: true, open: false, name: `Coaster ${n}`, price: 0,
     cars: 4, builtDay: day(park),
-  });
+  }) as CoasterObject;
   park.objects.push(obj);
   park._byId.set(obj.id, obj);
   refreshCoaster(obj);
@@ -2208,18 +2282,20 @@ export function startCoaster(park, x, y, dir) {
   return { ok: true, obj };
 }
 
+const loopRise = (type: PieceType) => (Coaster.PIECES[type].loop ? (Coaster.PHYSICS.loopRadius * 2) / Coaster.STEP : 0);
+
 /** Checks whether a piece can be added to the end of a coaster under construction. */
-export function canAddPiece(park, obj, type) {
+export function canAddPiece(park: Park, obj: CoasterObject | null, type: string): Result {
+  if (!isKey(Coaster.PIECES, type)) return { ok: false, reason: 'Unknown piece' };
   const def = Coaster.PIECES[type];
-  if (!def) return { ok: false, reason: 'Unknown piece' };
   if (!obj?.building) return { ok: false, reason: 'Close the coaster and choose Edit to change it.' };
   if (coasterComplete(obj)) return { ok: false, reason: 'The circuit is complete.' };
   if (obj.track.pieces.length >= 400) return { ok: false, reason: 'Track is too long.' };
   const start = coasterStart(obj);
   const lay = Coaster.layout(start, [...obj.track.pieces, type]);
-  const seg = lay.segs[lay.segs.length - 1];
+  const seg = lay.segs[lay.segs.length - 1]!;
   if (seg.h1 < 0) return { ok: false, reason: "Track can't go underground." };
-  const top = Math.max(seg.h0, seg.h1) + (def.loop ? (Coaster.PHYSICS.loopRadius * 2) / Coaster.STEP : 0);
+  const top = Math.max(seg.h0, seg.h1) + loopRise(type);
   if (top > Coaster.MAX_STEPS) return { ok: false, reason: 'Too high.' };
   const lo = Math.min(seg.h0, seg.h1);
   for (const c of seg.cells) {
@@ -2233,7 +2309,7 @@ export function canAddPiece(park, obj, type) {
       for (const other of lay.segs.slice(0, -1)) {
         if (!other.cells.some((oc) => oc.x === c.x && oc.y === c.y)) continue;
         const oLo = Math.min(other.h0, other.h1);
-        const oHi = Math.max(other.h0, other.h1) + (Coaster.PIECES[other.type].loop ? (Coaster.PHYSICS.loopRadius * 2) / Coaster.STEP : 0);
+        const oHi = Math.max(other.h0, other.h1) + loopRise(other.type);
         if (!(lo >= oHi + Coaster.CROSS_CLEARANCE || top + Coaster.CROSS_CLEARANCE <= oLo)) {
           return { ok: false, reason: 'Track would collide with itself' };
         }
@@ -2244,28 +2320,29 @@ export function canAddPiece(park, obj, type) {
   return { ok: true };
 }
 
-function reindexCoaster(park, obj) {
+function reindexCoaster(park: Park, obj: CoasterObject) {
   for (const [x, y] of obj._cells || []) if (park._objAt[idx(x, y)] === obj.id) park._objAt[idx(x, y)] = 0;
   refreshCoaster(obj);
-  for (const [x, y] of obj._cells) park._objAt[idx(x, y)] = obj.id;
+  for (const [x, y] of obj._cells || []) park._objAt[idx(x, y)] = obj.id;
   refreshAccess(park);
 }
 
-export function addPiece(park, id, type) {
-  const obj = getObject(park, id);
+export function addPiece(park: Park, id: number, type: string): Result<{ complete: boolean }> {
+  const obj = getCoaster(park, id);
   const check = canAddPiece(park, obj, type);
   if (!check.ok) return check;
-  const cost = Coaster.PIECES[type].cost;
+  const piece = type as PieceType; // validated by canAddPiece
+  const cost = Coaster.PIECES[piece].cost;
   spend(park, cost, 'construction');
-  obj.paid += cost;
-  obj.track.pieces.push(type);
-  reindexCoaster(park, obj);
-  return { ok: true, complete: coasterComplete(obj) };
+  obj!.paid += cost;
+  obj!.track.pieces.push(piece);
+  reindexCoaster(park, obj!);
+  return { ok: true, complete: coasterComplete(obj!) };
 }
 
 /** Removes the last piece (full refund while building). Removing the station demolishes the coaster. */
-export function removePiece(park, id) {
-  const obj = getObject(park, id);
+export function removePiece(park: Park, id: number): Result<{ removed?: boolean }> {
+  const obj = getCoaster(park, id);
   if (!obj?.building) return { ok: false, reason: 'Close the coaster and choose Edit first.' };
   if (obj.track.pieces.length <= 1) {
     const paid = obj.paid;
@@ -2274,7 +2351,7 @@ export function removePiece(park, id) {
     earn(park, paid, 'construction');
     return { ok: true, removed: true };
   }
-  const type = obj.track.pieces.pop();
+  const type = obj.track.pieces.pop()!;
   const cost = Coaster.PIECES[type].cost;
   obj.paid -= cost;
   earn(park, cost, 'construction');
@@ -2283,19 +2360,19 @@ export function removePiece(park, id) {
 }
 
 /** Runs the physics test. Returns the stats or the reason it failed. */
-export function testCoaster(park, id) {
-  const obj = getObject(park, id);
-  if (!obj || obj.kind !== 'custom') return { ok: false, reason: 'Not a custom coaster.' };
+export function testCoaster(park: Park, id: number): CoasterDesign {
+  const obj = getCoaster(park, id);
+  if (!obj) return { ok: false, reason: 'Not a custom coaster.' };
   if (!coasterComplete(obj)) {
-    const c = obj._layout.cursor;
+    const c = obj._layout!.cursor;
     return { ok: false, reason: `The track must return to the station. It ends ${describeGap(obj, c)}.` };
   }
   refreshCoaster(obj);
-  return obj._design;
+  return obj._design!;
 }
 
-function describeGap(obj, c) {
-  const parts = [];
+function describeGap(obj: CoasterObject, c: Cursor): string {
+  const parts: string[] = [];
   const dx = obj.x - c.x, dy = obj.y - c.y;
   if (dx) parts.push(`${Math.abs(dx)} tile${Math.abs(dx) > 1 ? 's' : ''} ${dx > 0 ? 'west' : 'east'}`);
   if (dy) parts.push(`${Math.abs(dy)} tile${Math.abs(dy) > 1 ? 's' : ''} ${dy > 0 ? 'north' : 'south'}`);
@@ -2304,10 +2381,10 @@ function describeGap(obj, c) {
   return parts.length ? parts.join(', ') + ' of the station' : 'at the station';
 }
 
-export function openCoaster(park, id) {
-  const obj = getObject(park, id);
+export function openCoaster(park: Park, id: number): CoasterDesign {
+  const obj = getCoaster(park, id);
   const res = testCoaster(park, id);
-  if (!res.ok) return res;
+  if (!res.ok || !obj) return res;
   obj.building = false;
   obj.open = true;
   obj._def = defFromDesign(obj);
@@ -2316,18 +2393,18 @@ export function openCoaster(park, id) {
   return res;
 }
 
-export function editCoaster(park, id) {
-  const obj = getObject(park, id);
-  if (!obj || obj.kind !== 'custom') return { ok: false, reason: 'Not a custom coaster.' };
+export function editCoaster(park: Park, id: number): Result {
+  const obj = getCoaster(park, id);
+  if (!obj) return { ok: false, reason: 'Not a custom coaster.' };
   if (obj.phase === 'running') return { ok: false, reason: 'Wait for the train to return to the station.' };
   setOpen(park, id, false);
   obj.building = true;
   return { ok: true };
 }
 
-export function renameRide(park, id, name) {
-  const obj = getObject(park, id);
-  if (!obj || obj.kind !== 'custom') return;
+export function renameRide(park: Park, id: number, name: string) {
+  const obj = getCoaster(park, id);
+  if (!obj) return;
   obj.name = String(name).trim().slice(0, 40) || obj.name;
   obj._def = defFromDesign(obj);
 }
@@ -2336,11 +2413,11 @@ export function renameRide(park, id, name) {
 // Weather
 // ---------------------------------------------------------------------------
 
-function rollWeatherType(park) {
+function rollWeatherType(park: Park) {
   return weighted(CLIMATES[cfgOf(park).climate].weather, rand(park));
 }
 
-function newDayWeather(park, newDay) {
+function newDayWeather(park: Park, newDay: number) {
   if (!cfgOf(park).weather) return;
   const before = park.weather.type;
   // Weather tends to persist from one day to the next.
@@ -2353,7 +2430,7 @@ function newDayWeather(park, newDay) {
 }
 
 /** Occasional mid-day changes, and lightning strikes in storms. */
-function maybeChangeWeather(park) {
+function maybeChangeWeather(park: Park) {
   if (!cfgOf(park).weather) return;
   if (rand(park) < 0.002) newDayWeather(park, day(park));
   const W = weatherOf(park);
@@ -2376,13 +2453,13 @@ function maybeChangeWeather(park) {
 
 const SPONSORS = ['Fizzwhizz Cola', 'MegaMart', 'Zoomy Telecom', 'Crunch Co.', 'Gigglebank', 'Spinwell Tyres'];
 
-function logEvent(park, ev, text, type = 'event') {
+function logEvent(park: Park, ev: EventDef, text: string, type: SimEvent['type'] = 'event') {
   park.eventLog.unshift({ id: ev.id, text: `${ev.icon} ${text}`, day: day(park) });
   if (park.eventLog.length > 20) park.eventLog.length = 20;
   park._events.push({ type, text: `${ev.icon} ${text}` });
 }
 
-function eventEligible(park, ev) {
+function eventEligible(park: Park, ev: EventDef) {
   const cfg = cfgOf(park);
   if (ev.crime && cfg.crimeRate <= 0) return false;
   if (ev.needsFallen && !park.fallen.length) return false;
@@ -2391,7 +2468,7 @@ function eventEligible(park, ev) {
   return true;
 }
 
-function maybeRandomEvent(park, newDay) {
+function maybeRandomEvent(park: Park, newDay: number) {
   const cfg = cfgOf(park);
   if (!cfg.events || newDay < 2) return;
   if (rand(park) >= Math.min(0.95, 0.55 * cfg.eventRate)) return;
@@ -2401,7 +2478,7 @@ function maybeRandomEvent(park, newDay) {
 }
 
 /** Runs a random event by id. Exported for tests and debugging. */
-export function triggerEvent(park, id) {
+export function triggerEvent(park: Park, id: string) {
   const ev = EVENTS.find((e) => e.id === id);
   if (!ev) return false;
   const s = parkStats(park);
@@ -2494,7 +2571,7 @@ export function triggerEvent(park, id) {
   return true;
 }
 
-function influencerReview(park, g) {
+function influencerReview(park: Park, g: Guest) {
   const delta = Math.round((g.happy - 50) / 4);
   if (Math.abs(delta) < 3) return;
   park.buzz = clamp(park.buzz + delta, -100, 100);
@@ -2508,14 +2585,14 @@ function influencerReview(park, g) {
 // ---------------------------------------------------------------------------
 
 /** Extra breakdown chance from age (0 when ageing is off). */
-export function ageLoss(park, obj) {
+export function ageLoss(park: Park, obj: ParkObject) {
   if (!cfgOf(park).ageing || !rideDef(obj)) return 0;
   return Math.min(AGEING.maxLoss, Math.max(0, day(park) - (obj.builtDay || 1)) * AGEING.perDay);
 }
 
-export const refurbishCost = (obj) => Math.round(obj.paid * AGEING.refurbishShare);
+export const refurbishCost = (obj: ParkObject) => Math.round(obj.paid * AGEING.refurbishShare);
 
-export function refurbish(park, id) {
+export function refurbish(park: Park, id: number) {
   const obj = getObject(park, id);
   if (!obj || !rideDef(obj)) return { ok: false, reason: 'Only rides can be refurbished.' };
   const cost = refurbishCost(obj);
@@ -2531,15 +2608,15 @@ export function refurbish(park, id) {
 // ---------------------------------------------------------------------------
 
 /** Changes a live setting mid-game. Settings marked live:false are fixed at creation. */
-export function setSetting(park, key, value) {
+export function setSetting(park: Park, key: string, value: unknown): Result<{ value: unknown }> {
   const def = settingDef(key);
   if (!def || !def.live) return { ok: false, reason: 'That setting can only be chosen when creating a park.' };
   park.settings = sanitizeSettings({ ...park.settings, [key]: value });
   if (key === 'executions' && !park.settings.executions) park.captives.length = 0;
-  return { ok: true, value: park.settings[key] };
+  return { ok: true, value: park.settings[def.key] };
 }
 
-export function renameObject(park, id, name) {
+export function renameObject(park: Park, id: number, name: string) {
   const obj = getObject(park, id);
   if (!obj) return;
   if (obj.kind === 'custom') return renameRide(park, id, name);
@@ -2548,30 +2625,30 @@ export function renameObject(park, id, name) {
   if (RIDES[obj.kind]) obj._def = obj.name ? { ...RIDES[obj.kind], name: obj.name } : undefined;
 }
 
-export function renameStaff(park, id, name) {
+export function renameStaff(park: Park, id: number, name: string) {
   const s = park.staff.find((m) => m.id === id);
   const clean = String(name).trim().slice(0, 40);
   if (s && clean) s.name = clean;
 }
 
 /** Paints an object. field: 'color' (any ride/shop/coaster) or 'trainColor' (custom coasters). */
-export function setColor(park, id, field, color) {
+export function setColor(park: Park, id: number, field: string, color: string | null): Result {
   const obj = getObject(park, id);
-  if (!obj || !['color', 'trainColor'].includes(field)) return { ok: false };
+  if (!obj || (field !== 'color' && field !== 'trainColor')) return { ok: false, reason: 'Nothing to paint.' };
   if (color === null) { delete obj[field]; return { ok: true }; }
   if (!isHexColor(color)) return { ok: false, reason: 'Colours are #rrggbb' };
   obj[field] = color.toLowerCase();
   return { ok: true };
 }
 
-export function setCoasterCars(park, id, cars) {
-  const obj = getObject(park, id);
-  if (obj?.kind !== 'custom') return;
+export function setCoasterCars(park: Park, id: number, cars: number) {
+  const obj = getCoaster(park, id);
+  if (!obj) return;
   obj.cars = clamp(Math.round(cars), 2, 7);
   obj._def = defFromDesign(obj);
 }
 
-export function setUniform(park, role, color) {
+export function setUniform(park: Park, role: StaffRole, color: string | null) {
   if (!STAFF[role]) return;
   if (color === null) delete park.uniforms[role];
   else if (isHexColor(color)) park.uniforms[role] = color.toLowerCase();
@@ -2581,30 +2658,40 @@ export function setUniform(park, role, color) {
 // Coaster design codes (share/import)
 // ---------------------------------------------------------------------------
 
-const toBase64 = (str) => {
+const toBase64 = (str: string): string => {
   const bytes = new TextEncoder().encode(str);
   let bin = '';
   for (const b of bytes) bin += String.fromCharCode(b);
   return btoa(bin);
 };
-const fromBase64 = (b64) => new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+const fromBase64 = (b64: string): string => new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
 
 /** A shareable text code for a custom coaster's design. */
-export function exportDesign(obj) {
-  const design = { v: 1, name: obj.name, pieces: obj.track.pieces, cars: obj.cars || 4 };
+/** The JSON inside a design code. */
+export interface DesignCode {
+  v: 1;
+  name: string;
+  pieces: PieceType[];
+  cars: number;
+  color?: string;
+  trainColor?: string;
+}
+
+export function exportDesign(obj: CoasterObject): string {
+  const design: DesignCode = { v: 1, name: obj.name, pieces: obj.track.pieces, cars: obj.cars || 4 };
   if (obj.color) design.color = obj.color;
   if (obj.trainColor) design.trainColor = obj.trainColor;
   return DESIGN_CODE_PREFIX + toBase64(JSON.stringify(design));
 }
 
 /** Parses and validates a design code. */
-export function parseDesign(code) {
+export function parseDesign(code: string): Result<{ design: Omit<DesignCode, 'v'> & { cost: number } }> {
   try {
     const text = String(code).trim();
     if (!text.startsWith(DESIGN_CODE_PREFIX)) return { ok: false, reason: 'Not a Rollercoaster Mogul design code.' };
     const d = JSON.parse(fromBase64(text.slice(DESIGN_CODE_PREFIX.length)));
     if (!d || d.v !== 1 || !Array.isArray(d.pieces) || d.pieces.length < 2 || d.pieces.length > 400) return { ok: false, reason: 'Unsupported or damaged design.' };
-    if (d.pieces[0] !== 'station' || d.pieces.some((p) => !Coaster.PIECES[p])) return { ok: false, reason: 'The design contains unknown track.' };
+    if (d.pieces[0] !== 'station' || d.pieces.some((p: unknown) => !isKey(Coaster.PIECES, p))) return { ok: false, reason: 'The design contains unknown track.' };
     return {
       ok: true,
       design: {
@@ -2622,7 +2709,7 @@ export function parseDesign(code) {
 }
 
 /** Builds a coaster from a design code with its station at (x, y) facing dir. Rolls back if blocked. */
-export function importDesign(park, x, y, dir, code) {
+export function importDesign(park: Park, x: number, y: number, dir: number, code: string): Result<{ obj: CoasterObject }> {
   const parsed = parseDesign(code);
   if (!parsed.ok) return parsed;
   const { design } = parsed;
@@ -2631,10 +2718,10 @@ export function importDesign(park, x, y, dir, code) {
   if (!start.ok) return start;
   const obj = start.obj;
   for (let i = 1; i < design.pieces.length; i++) {
-    const res = addPiece(park, obj.id, design.pieces[i]);
+    const res = addPiece(park, obj.id, design.pieces[i]!);
     if (!res.ok) {
       while (getObject(park, obj.id)) removePiece(park, obj.id);
-      return { ok: false, reason: `Piece ${i + 1} (${Coaster.PIECES[design.pieces[i]].name}) doesn't fit here: ${res.reason}` };
+      return { ok: false, reason: `Piece ${i + 1} (${Coaster.PIECES[design.pieces[i]!].name}) doesn't fit here: ${res.reason}` };
     }
   }
   obj.name = design.name;
@@ -2646,6 +2733,6 @@ export function importDesign(park, x, y, dir, code) {
 }
 
 /** Removes and returns pending UI notifications produced by the sim. */
-export function drainEvents(park) {
+export function drainEvents(park: Park) {
   return park._events.splice(0);
 }

@@ -1,10 +1,10 @@
 import { api, money, el } from './api.js';
-import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, PANDEMONIUM, CRIME, OBJECTIVES, PATH_COST, GRID, itemDef, itemCategory } from './catalog.js';
-import * as Sim from './sim.js';
+import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, PANDEMONIUM, CRIME, OBJECTIVES, PATH_COST, GRID, itemDef, itemCategory } from './shared/catalog.js';
+import * as Sim from './shared/sim.js';
 import { Renderer } from './render.js';
 import { Renderer3D, webglAvailable } from './render3d.js';
-import { PIECES, MAX_STEPS, METERS, STEP as HEIGHT_STEP } from './coaster.js';
-import { SETTINGS_SCHEMA, DIFFICULTIES, defaultSettings, CLIMATES, WEATHER, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES, PAINT } from './options.js';
+import { PIECES, MAX_STEPS, METERS, STEP as HEIGHT_STEP } from './shared/coaster.js';
+import { SETTINGS_SCHEMA, DIFFICULTIES, defaultSettings, CLIMATES, WEATHER, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES, PAINT } from './shared/options.js';
 
 const STEP = 0.1; // fixed simulation step in game-seconds
 const AUTOSAVE_MS = 45_000;

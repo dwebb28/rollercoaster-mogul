@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../server/app.js';
 import { loadConfig } from '../server/config.js';
-import * as Sim from '../public/js/sim.js';
+import * as Sim from '../src/shared/sim.ts';
 
 let server, base;
 const H = { 'X-Requested-With': 'rollercoaster-mogul', 'Content-Type': 'application/json' };

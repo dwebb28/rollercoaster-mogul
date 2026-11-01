@@ -3,9 +3,9 @@
 import { writeFileSync } from 'node:fs';
 import {
   SETTINGS_SCHEMA, DIFFICULTIES, CLIMATES, WEATHER, EVENTS, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES, defaultSettings,
-} from '../public/js/options.js';
-import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, AGEING, DESIGN_CODE_PREFIX, SHOP_VALUE } from '../public/js/catalog.js';
-import { PIECES, PHYSICS } from '../public/js/coaster.js';
+} from '../src/shared/options.ts';
+import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, AGEING, DESIGN_CODE_PREFIX, SHOP_VALUE } from '../src/shared/catalog.ts';
+import { PIECES, PHYSICS } from '../src/shared/coaster.ts';
 
 const table = (head, rows) => [
   `| ${head.join(' | ')} |`,

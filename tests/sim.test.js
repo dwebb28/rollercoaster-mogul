@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as Sim from '../public/js/sim.js';
-import { START_CASH, PATH_COST, RIDES } from '../public/js/catalog.js';
+import * as Sim from '../src/shared/sim.ts';
+import { START_CASH, PATH_COST, RIDES } from '../src/shared/catalog.ts';
 
 /** A small park with a path loop, rides, food, and staff. */
 function samplePark(seed = 7) {
@@ -431,7 +431,7 @@ test('barbed wire lockdown keeps everyone inside', () => {
 });
 
 test('pandas fight back but are weaker than the squad on average', async () => {
-  const { PANDEMONIUM, STAFF } = await import('../public/js/catalog.js');
+  const { PANDEMONIUM, STAFF } = await import('../src/shared/catalog.ts');
   const avg = ([a, b]) => (a + b) / 2;
   const pandaDps = avg(PANDEMONIUM.pandaAccuracy) / PANDEMONIUM.throwCooldown;
   const squadDps = avg(STAFF.squad.accuracy) / PANDEMONIUM.shotCooldown;
@@ -457,7 +457,7 @@ test('pandas fight back but are weaker than the squad on average', async () => {
 });
 
 test('officers killed by pandas are insured, buried and memorialised', async () => {
-  const { PANDEMONIUM } = await import('../public/js/catalog.js');
+  const { PANDEMONIUM } = await import('../src/shared/catalog.ts');
   const p = securePark(95, 6);
   p.pandemonium.nextRaidDay = Infinity;
   // Fight raids until someone falls.

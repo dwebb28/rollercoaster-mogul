@@ -6,6 +6,11 @@
 // To add an option, add an entry here; the setup screen and Rules panel
 // pick it up automatically.
 
+import type {
+  SettingDef, SettingKey, Settings, Difficulty, Climate, ClimateDef, WeatherType, WeatherDef, EventDef,
+  GuestTypeKey, GuestTypeDef, StaffTraitDef, PathStyle,
+} from './types.ts';
+
 // ---------------------------------------------------------------------------
 // Park settings
 // ---------------------------------------------------------------------------
@@ -15,7 +20,7 @@
  * bounds/options, default, and `live` (can be changed mid-game from the Rules
  * panel) or not (fixed when the park is created).
  */
-export const SETTINGS_SCHEMA = [
+export const SETTINGS_SCHEMA: SettingDef[] = [
   { key: 'difficulty', label: 'Difficulty', type: 'select', group: 'Park', options: ['sandbox', 'easy', 'normal', 'hard', 'nightmare'], default: 'normal', live: false,
     help: 'Sets sensible defaults for everything below. You can still tweak each one.' },
   { key: 'climate', label: 'Climate', type: 'select', group: 'Park', options: ['temperate', 'desert', 'tropical', 'alpine', 'autumn'], default: 'temperate', live: false,
@@ -50,7 +55,7 @@ export const SETTINGS_SCHEMA = [
   { key: 'eventRate', label: 'Event frequency', type: 'range', group: 'World', min: 0.25, max: 3, step: 0.25, default: 1, live: true },
 ];
 
-export const DIFFICULTIES = {
+export const DIFFICULTIES: Record<Difficulty, { label: string } & Partial<Settings>> = {
   sandbox: { label: 'Sandbox', startCash: 1000000, crimeRate: 0, pandemonium: 'off', breakdowns: 0.5, guestWealth: 1.5, wages: 0.5, priceTolerance: 1.3 },
   easy: { label: 'Easy', startCash: 60000, crimeRate: 0.5, pandemonium: 'normal', breakdowns: 0.75, guestWealth: 1.25, priceTolerance: 1.15 },
   normal: { label: 'Normal' },
@@ -58,37 +63,39 @@ export const DIFFICULTIES = {
   nightmare: { label: 'Nightmare', startCash: 8000, crimeRate: 2.5, pandemonium: 'aggressive', breakdowns: 2.5, guestWealth: 0.7, wages: 1.5, priceTolerance: 0.7, guestRate: 0.75 },
 };
 
-const SCHEMA_BY_KEY = Object.fromEntries(SETTINGS_SCHEMA.map((s) => [s.key, s]));
+const SCHEMA_BY_KEY = Object.fromEntries(SETTINGS_SCHEMA.map((s) => [s.key, s])) as Record<SettingKey, SettingDef>;
+const isDifficulty = (d: unknown): d is Difficulty => typeof d === 'string' && d in DIFFICULTIES;
 
 /** Full settings for a difficulty preset. */
-export function defaultSettings(difficulty = 'normal') {
-  const base = Object.fromEntries(SETTINGS_SCHEMA.map((s) => [s.key, s.default]));
-  const preset = DIFFICULTIES[difficulty] || {};
-  const { label, ...values } = preset; // eslint-disable-line no-unused-vars
-  return { ...base, ...values, difficulty: DIFFICULTIES[difficulty] ? difficulty : 'normal' };
+export function defaultSettings(difficulty: string = 'normal'): Settings {
+  const base = Object.fromEntries(SETTINGS_SCHEMA.map((s) => [s.key, s.default])) as unknown as Settings;
+  const key = isDifficulty(difficulty) ? difficulty : 'normal';
+  const { label: _label, ...values } = DIFFICULTIES[key];
+  return { ...base, ...values, difficulty: key };
 }
 
 /** Validates untrusted settings against the schema, filling defaults. */
-export function sanitizeSettings(raw) {
-  const r = raw && typeof raw === 'object' ? raw : {};
-  const out = defaultSettings(SCHEMA_BY_KEY.difficulty.options.includes(r.difficulty) ? r.difficulty : 'normal');
+export function sanitizeSettings(raw?: unknown): Settings {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const out = defaultSettings(isDifficulty(r.difficulty) ? r.difficulty : 'normal');
+  const write = out as unknown as Record<string, unknown>;
   for (const s of SETTINGS_SCHEMA) {
     const v = r[s.key];
     if (v === undefined) continue;
-    if (s.type === 'bool') out[s.key] = v === true;
-    else if (s.type === 'select') { if (s.options.includes(v)) out[s.key] = v; }
-    else if (Number.isFinite(v)) out[s.key] = Math.max(s.min, Math.min(s.max, v));
+    if (s.type === 'bool') write[s.key] = v === true;
+    else if (s.type === 'select') { if (typeof v === 'string' && s.options.includes(v)) write[s.key] = v; }
+    else if (typeof v === 'number' && Number.isFinite(v)) write[s.key] = Math.max(s.min, Math.min(s.max, v));
   }
   return out;
 }
 
-export const settingDef = (key) => SCHEMA_BY_KEY[key];
+export const settingDef = (key: string): SettingDef | undefined => SCHEMA_BY_KEY[key as SettingKey];
 
 // ---------------------------------------------------------------------------
 // Climates & weather
 // ---------------------------------------------------------------------------
 
-export const WEATHER = {
+export const WEATHER: Record<WeatherType, WeatherDef> = {
   sunny: { label: 'Sunny', icon: '☀️', arrivals: 1, thirst: 1, happyDrain: 0, breakdown: 1, sky: 0x9fd3f2, light: 1 },
   cloudy: { label: 'Cloudy', icon: '⛅', arrivals: 0.95, thirst: 0.9, happyDrain: 0, breakdown: 1, sky: 0xaebccb, light: 0.8 },
   rain: { label: 'Rain', icon: '🌧️', arrivals: 0.6, thirst: 0.7, happyDrain: 0.15, breakdown: 1.2, sky: 0x7d8a99, light: 0.6, precip: 'rain', umbrella: true },
@@ -98,7 +105,7 @@ export const WEATHER = {
   fog: { label: 'Fog', icon: '🌫️', arrivals: 0.85, thirst: 0.9, happyDrain: 0.02, breakdown: 1, sky: 0xc9cfd3, light: 0.7, fog: true },
 };
 
-export const CLIMATES = {
+export const CLIMATES: Record<Climate, ClimateDef> = {
   temperate: {
     label: 'Temperate', weather: { sunny: 4, cloudy: 3, rain: 2, storm: 0.5, heatwave: 0.5, fog: 0.7 },
     trees: { tree: 5, pine: 4, cherry: 1 }, grass: [104, 178, 82], outer: 0x3f7a3c,
@@ -129,7 +136,7 @@ export const CLIMATES = {
  * weight: relative chance. when(park, stats): eligibility. The effect itself
  * lives in sim.js `applyEvent`, keyed by id, so this table stays pure data.
  */
-export const EVENTS = [
+export const EVENTS: EventDef[] = [
   { id: 'tourBus', label: 'Tour bus', icon: '🚌', weight: 3 },
   { id: 'sponsor', label: 'Sponsorship deal', icon: '🤝', weight: 1.5 },
   { id: 'vip', label: 'VIP visit', icon: '🕴️', weight: 1.2 },
@@ -148,7 +155,7 @@ export const EVENTS = [
 // Guest types
 // ---------------------------------------------------------------------------
 
-export const GUEST_TYPES = {
+export const GUEST_TYPES: Record<GuestTypeKey, GuestTypeDef> = {
   family: { label: 'Family', icon: '👨‍👩‍👧', weight: 4, cash: [30, 90], pref: [1, 5], speed: 0.9, energy: 1.1, hunger: 1.1, litter: 0.7, souvenir: 0.3 },
   thrill: { label: 'Thrill-seeker', icon: '🤘', weight: 3, cash: [40, 120], pref: [6, 10], speed: 1.1, energy: 0.9, hunger: 1, litter: 0.75, souvenir: 0.1 },
   teen: { label: 'Teenager', icon: '🛹', weight: 2, cash: [15, 55], pref: [4, 9], speed: 1.2, energy: 0.8, hunger: 1.3, litter: 0.95, souvenir: 0.15, crime: 1.5 },
@@ -161,7 +168,7 @@ export const GUEST_TYPES = {
 // Staff traits (0–2 rolled per hire)
 // ---------------------------------------------------------------------------
 
-export const STAFF_TRAITS = {
+export const STAFF_TRAITS: Record<string, StaffTraitDef> = {
   speedy: { label: 'Speedy', icon: '💨', speed: 1.3 },
   lazy: { label: 'Lazy', icon: '😴', speed: 0.75, wage: 0.85 },
   sharpshooter: { label: 'Sharpshooter', icon: '🎯', accuracy: 0.1, roles: ['squad'] },
@@ -178,7 +185,7 @@ export const STAFF_TRAITS = {
 // Path styles & colour palettes
 // ---------------------------------------------------------------------------
 
-export const PATH_STYLES = [
+export const PATH_STYLES: PathStyle[] = [
   { label: 'Sandstone', color: 0xd7c4a3, edge: 0x9c8a6e },
   { label: 'Concrete', color: 0xc4c8cc, edge: 0x8a8f95 },
   { label: 'Red brick', color: 0xb85c4a, edge: 0x7a3a2e },
@@ -189,16 +196,17 @@ export const PATH_STYLES = [
 
 export const PAINT = ['#e5484d', '#ef6fa8', '#f2b84b', '#ffd23f', '#7bd389', '#2bb3a3', '#5aa9e6', '#3a86ff', '#9b6bd6', '#c47a3d', '#ffffff', '#333333'];
 
-export const isHexColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
+export const isHexColor = (c: unknown): c is string => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
 
-/** Weighted pick from {key: weight} using a 0..1 random number. */
-export function weighted(table, r) {
-  const entries = Object.entries(table);
-  const total = entries.reduce((n, [, w]) => n + (typeof w === 'number' ? w : w.weight), 0);
+/** Weighted pick from {key: weight} (or {key: {weight}}) using a 0..1 random number. */
+export function weighted<K extends string>(table: Partial<Record<K, number | { weight: number }>>, r: number): K {
+  const entries = Object.entries(table) as [K, number | { weight: number }][];
+  const weightOf = (w: number | { weight: number }) => (typeof w === 'number' ? w : w.weight);
+  const total = entries.reduce((n, [, w]) => n + weightOf(w), 0);
   let x = r * total;
   for (const [k, w] of entries) {
-    x -= typeof w === 'number' ? w : w.weight;
+    x -= weightOf(w);
     if (x < 0) return k;
   }
-  return entries[entries.length - 1][0];
+  return entries[entries.length - 1]![0];
 }
