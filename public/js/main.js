@@ -109,6 +109,7 @@ function frame(now) {
   for (const ev of sim.drainEvents()) toast(ev.text, ev.type);
   park._fx = sim.drainFx();
 
+  const renderStart = performance.now();
   renderer.render(park, {
     time: animT,
     hover: state.hover,
@@ -120,6 +121,7 @@ function frame(now) {
     coasterDir: state.coasterDir,
     coasterStartOk: state.hover && state.tool === 'coaster-start' ? Sim.objectAt(park, state.hover.x, state.hover.y) === null && park.tiles[Sim.idx(state.hover.x, state.hover.y)] === Sim.TILE.GRASS : false,
   }, dt);
+  perf.record(now, performance.now() - renderStart);
 
   hudT -= dt;
   if (hudT <= 0) {
@@ -1204,7 +1206,7 @@ function startImport(code) {
 // ---------------------------------------------------------------------------
 
 async function save({ keepalive = false } = {}) {
-  if (state.saving) return;
+  if (state.saving || state.stress) return; // stress-test parks are never saved
   state.saving = true;
   try {
     const data = await sim.serialize();
@@ -1317,6 +1319,7 @@ function bindInput() {
     else if (k === 'g') togglePalette('security');
     else if (k === '=' || k === '+') renderer.zoomAt(1.15, canvas.clientWidth / 2, canvas.clientHeight / 2);
     else if (k === '-') renderer.zoomAt(1 / 1.15, canvas.clientWidth / 2, canvas.clientHeight / 2);
+    else if (e.key === 'F3') { e.preventDefault(); perf.toggle(); }
     else if (k === 'q' && renderer.rotate) renderer.rotate(Math.PI / 8);
     else if (k === 'e' && renderer.rotate) renderer.rotate(-Math.PI / 8);
     else if (k === 'x' && state.tool === 'coaster-start') state.coasterDir = (state.coasterDir + 1) % 4;
@@ -1362,7 +1365,98 @@ function bindInput() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Performance overlay (F3 or ?perf)
+// ---------------------------------------------------------------------------
+
+const perf = {
+  on: new URLSearchParams(location.search).has('perf'),
+  frames: [], // [timestamp, frameMs, renderMs]
+  lastT: 0,
+  shownAt: 0,
+
+  record(now, renderMs) {
+    if (this.lastT) this.frames.push([now, now - this.lastT, renderMs]);
+    this.lastT = now;
+    while (this.frames.length && now - this.frames[0][0] > 2000) this.frames.shift();
+    if (this.on && now - this.shownAt > 500) { this.shownAt = now; this.show(); }
+  },
+
+  toggle() {
+    this.on = !this.on;
+    $('perf').hidden = !this.on;
+    if (this.on) this.show();
+  },
+
+  report() {
+    const f = this.frames.map((x) => x[1]).sort((a, b) => a - b);
+    const r = this.frames.map((x) => x[2]);
+    const pct = (arr, p) => (arr.length ? arr[Math.min(arr.length - 1, Math.floor(arr.length * p))] : 0);
+    const st = sim.stats;
+    const park = state.park;
+    const gl = renderer.gl?.info?.render;
+    return {
+      fps: f.length ? Math.round(1000 / (f.reduce((a, b) => a + b, 0) / f.length)) : 0,
+      frameMsP50: +pct(f, 0.5).toFixed(1),
+      frameMsP95: +pct(f, 0.95).toFixed(1),
+      renderMsAvg: +(r.reduce((a, b) => a + b, 0) / Math.max(1, r.length)).toFixed(2),
+      drawCalls: gl?.calls ?? null,
+      triangles: gl?.triangles ?? null,
+      renderer: is3D ? 'WebGL 3D' : '2D canvas',
+      workerLoadPct: +(st.workerLoad * 100).toFixed(2),
+      snapshotsPerSec: +st.snapshotsPerSec.toFixed(1),
+      motionPerSec: +st.motionPerSec.toFixed(1),
+      snapshotDecodeMs: +st.snapshotMs.toFixed(2),
+      receiveMsPerSec: +st.receiveMsPerSec.toFixed(1),
+      speed: state.speed,
+      guests: park?.guests.length ?? 0,
+      staff: park?.staff.length ?? 0,
+      objects: park?.objects.length ?? 0,
+      devicePixelRatio: window.devicePixelRatio,
+      viewport: `${innerWidth}×${innerHeight}`,
+      userAgent: navigator.userAgent,
+    };
+  },
+
+  show() {
+    const p = this.report();
+    const row = (k, v, warn) => el('div', { class: warn ? 'warn' : '' }, el('span', {}, k), el('b', {}, v));
+    $('perf').hidden = false;
+    $('perf').replaceChildren(
+      el('div', { class: 'perf-title' }, '⏱ Performance', el('button', { class: 'perf-x', onclick: () => this.toggle(), 'aria-label': 'Close' }, '×')),
+      row('FPS', p.fps, p.fps < 50),
+      row('Frame p50 / p95', `${p.frameMsP50} / ${p.frameMsP95} ms`, p.frameMsP95 > 33),
+      row('Render (JS)', `${p.renderMsAvg} ms`, p.renderMsAvg > 8),
+      p.drawCalls !== null && row('Draw calls / tris', `${p.drawCalls} / ${(p.triangles / 1000).toFixed(0)}k`),
+      row('Worker sim load', `${p.workerLoadPct}%`, p.workerLoadPct > 50),
+      row('Snapshots', `${p.snapshotsPerSec}/s · ${p.snapshotDecodeMs} ms each`),
+      row('Motion frames', `${p.motionPerSec}/s`),
+      row('Page receive', `${p.receiveMsPerSec} ms/s`, p.receiveMsPerSec > 100),
+      row('Guests / staff / objects', `${p.guests} / ${p.staff} / ${p.objects}`),
+      el('div', { class: 'perf-actions' },
+        el('button', { class: 'btn btn-small', onclick: () => runStress(600) }, 'Stress 600'),
+        el('button', { class: 'btn btn-small', onclick: () => runStress(1000) }, 'Stress 1000'),
+        el('button', { class: 'btn btn-small', onclick: () => {
+          navigator.clipboard?.writeText(JSON.stringify(this.report(), null, 2)).then(() => toast('Performance report copied.'), () => {});
+        } }, 'Copy report')),
+      state.stress && el('div', { class: 'small' }, 'Stress test running: not saved. Reload to return to your park.'),
+    );
+  },
+};
+
+async function runStress(guests) {
+  if (!state.stress && !confirm(`Load a ${guests}-guest stress-test park? Your park is saved first and comes back when you reload.`)) return;
+  if (!state.stress && state.dirty) await save();
+  state.stress = true;
+  closePanel();
+  await sim.stress(guests);
+  renderer.centerOn(20, 20);
+  if (renderer.distance) renderer.distance = 48;
+  setSpeed(4);
+  toast(`Stress test: ${state.park.guests.length} guests at 4× speed. Reload to return to your park.`, 'raid');
+}
+
 // Handy for debugging from the browser console.
-window.mogul = { state, renderer, Sim, sim };
+window.mogul = { state, renderer, Sim, sim, perf };
 
 boot();

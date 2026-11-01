@@ -16,7 +16,8 @@
     "dev": "npm run build && (tsc -p . --watch --preserveWatchOutput & node --disable-warning=ExperimentalWarning --watch server/index.js)",
     "pretest": "npm run typecheck",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.js",
-    "docs": "node --disable-warning=ExperimentalWarning scripts/gen-docs.mjs"
+    "docs": "node --disable-warning=ExperimentalWarning scripts/gen-docs.mjs",
+    "bench": "node --disable-warning=ExperimentalWarning scripts/bench.mjs"
   },
   "license": "MIT",
   "dependencies": {

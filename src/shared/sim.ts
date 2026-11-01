@@ -2477,6 +2477,27 @@ function maybeRandomEvent(park: Park, newDay: number) {
   triggerEvent(park, weighted(pool, rand(park)));
 }
 
+/**
+ * Adds guests immediately (ignoring the arrival rate and park cap), spread over
+ * random path tiles. Used by the stress test and benchmarks.
+ */
+export function addGuests(park: Park, n: number): number {
+  const paths: number[] = [];
+  for (let i = 0; i < park.tiles.length; i++) if (park.tiles[i] === TILE.PATH) paths.push(i);
+  let added = 0;
+  for (let k = 0; k < n; k++) {
+    const g = spawnGuest(park, { cash: 60 + Math.floor(rand(park) * 120) });
+    if (!g) continue;
+    added++;
+    if (!paths.length) continue;
+    const at = pick(park, paths);
+    g.x = g.nx = g.lx = at % GRID;
+    g.y = g.ny = g.ly = (at / GRID) | 0;
+    g.t = 0;
+  }
+  return added;
+}
+
 /** Runs a random event by id. Exported for tests and debugging. */
 export function triggerEvent(park: Park, id: string) {
   const ev = EVENTS.find((e) => e.id === id);

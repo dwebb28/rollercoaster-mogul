@@ -5,11 +5,19 @@
 /// <reference lib="webworker" />
 import * as Sim from '../shared/sim.ts';
 import type { Park } from '../shared/types.ts';
+import { MOTION_STRIDE, GUEST_STATES } from './protocol.ts';
 import type { ToWorker, FromWorker } from './protocol.ts';
+import { buildStressPark } from '../shared/stress.ts';
 
 const STEP = 0.1; // game-seconds per simulation step
 const MAX_STEPS_PER_TICK = 60;
 const TICK_MS = 16;
+/**
+ * Full snapshots are the expensive part of talking to the page (hundreds of
+ * KB to decode on the main thread), so they're capped at this interval.
+ * Between them, compact motion frames keep walkers moving smoothly.
+ */
+const FULL_SNAPSHOT_MS = 125;
 
 /**
  * Every action the page may perform. Each takes the park first; the page
@@ -64,6 +72,9 @@ let last = performance.now();
 let simulated = 0;
 let stepMs = 0;
 let dirty = false;
+let lastFull = 0;
+/** Something besides walker motion changed (an action, a load): send a full snapshot. */
+let structural = false;
 
 const post = (msg: FromWorker) => scope.postMessage(msg);
 
@@ -87,6 +98,35 @@ function flush() {
   simulated = 0;
   stepMs = 0;
   dirty = false;
+  structural = false;
+  lastFull = performance.now();
+}
+
+const STATE_CODE = new Map<string, number>(GUEST_STATES.map((s, i) => [s, i]));
+
+/** Positions and states of every walker, in a buffer the page receives without copying. */
+function flushMotion() {
+  if (!park) return;
+  const { guests, staff } = park;
+  const buf = new Float64Array((guests.length + staff.length) * MOTION_STRIDE);
+  let o = 0;
+  for (const g of guests) {
+    buf[o] = g.id; buf[o + 1] = g.x; buf[o + 2] = g.y; buf[o + 3] = g.nx; buf[o + 4] = g.ny; buf[o + 5] = g.t;
+    buf[o + 6] = STATE_CODE.get(g.state) ?? 0; buf[o + 7] = g.hp ?? 0;
+    o += MOTION_STRIDE;
+  }
+  for (const s of staff) {
+    buf[o] = s.id; buf[o + 1] = s.x; buf[o + 2] = s.y; buf[o + 3] = s.nx; buf[o + 4] = s.ny; buf[o + 5] = s.t;
+    buf[o + 6] = s.busy; buf[o + 7] = s.down;
+    o += MOTION_STRIDE;
+  }
+  const events = park._events.splice(0);
+  const fx = (park._fx || []).splice(0);
+  const msg: FromWorker = { type: 'motion', walkers: buf, guestCount: guests.length, events, fx, simulated, stepMs };
+  scope.postMessage(msg, [buf.buffer]);
+  simulated = 0;
+  stepMs = 0;
+  dirty = false;
 }
 
 function call(method: MethodName, args: unknown[]): unknown {
@@ -94,6 +134,7 @@ function call(method: MethodName, args: unknown[]): unknown {
   const fn = METHODS[method] as ((p: Park, ...a: unknown[]) => unknown) | undefined;
   if (!fn) throw new Error(`Unknown action ${String(method)}`);
   dirty = true;
+  structural = true;
   return fn(park, ...args);
 }
 
@@ -116,7 +157,9 @@ function tick() {
       dirty = true;
     }
   }
-  if (dirty) flush();
+  if (!dirty) return;
+  if (structural || now - lastFull >= FULL_SNAPSHOT_MS) flush();
+  else flushMotion();
 }
 
 scope.onmessage = (e: MessageEvent<ToWorker>) => {
@@ -137,6 +180,12 @@ scope.onmessage = (e: MessageEvent<ToWorker>) => {
         acc = 0;
         flush();
         post({ type: 'result', id: msg.id, value: { ok: true } });
+        return;
+      case 'stress':
+        park = buildStressPark(msg.guests, msg.seed);
+        acc = 0;
+        flush();
+        post({ type: 'result', id: msg.id, value: { ok: true, guests: park.guests.length } });
         return;
       case 'serialize':
         if (!park) throw new Error('No park loaded');

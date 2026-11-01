@@ -216,3 +216,12 @@ textarea.code { font-family: ui-monospace, monospace; font-size: 0.72rem; margin
 .panel .setting { grid-template-columns: 1fr; }
 .panel .setting .help { grid-column: 1; }
 .panel fieldset { min-width: 0; }
+
+.perf { position: fixed; top: 60px; left: 12px; z-index: 15; width: 260px; background: rgba(15, 20, 17, 0.88); color: #e8f0e6;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; border-radius: 10px; padding: 8px 10px; box-shadow: var(--shadow); }
+.perf > div { display: flex; justify-content: space-between; gap: 8px; }
+.perf .warn b { color: #ff8b8f; }
+.perf .perf-title { font-weight: 700; margin-bottom: 4px; }
+.perf .perf-x { background: none; border: none; color: #e8f0e6; cursor: pointer; font-size: 1rem; line-height: 1; }
+.perf .perf-actions { gap: 4px; margin-top: 6px; flex-wrap: wrap; justify-content: flex-start; }
+.perf .btn { color: var(--ink); }
