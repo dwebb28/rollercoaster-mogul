@@ -4,6 +4,7 @@
 
 /// <reference lib="webworker" />
 import * as Sim from '../shared/sim.ts';
+import { plainWalker } from '../shared/core.ts';
 import type { Park } from '../shared/types.ts';
 import { MOTION_STRIDE, GUEST_STATES } from './protocol.ts';
 import type { ToWorker, FromWorker } from './protocol.ts';
@@ -82,8 +83,8 @@ const post = (msg: FromWorker) => scope.postMessage(msg);
 function snapshot(p: Park): Park {
   return {
     ...p,
-    guests: p.guests.map((g) => ({ ...g, route: null })),
-    staff: p.staff.map((s) => ({ ...s, route: null })),
+    guests: p.guests.map((g) => { const c = plainWalker(g); c.route = null; return c; }),
+    staff: p.staff.map((s) => { const c = plainWalker(s); c.route = null; return c; }),
     _guestById: new Map(),
     _events: [],
     _fx: [],

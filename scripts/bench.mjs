@@ -10,6 +10,7 @@ import v8 from 'node:v8';
 import { Session } from 'node:inspector/promises';
 import { buildStressPark } from '../src/shared/stress.ts';
 import { step } from '../src/shared/sim.ts';
+import { plainWalker } from '../src/shared/core.ts';
 
 const STEP = 0.1;
 const sizes = [100, 300, 600, 1000];
@@ -18,8 +19,8 @@ const fmt = (n, d = 2) => n.toFixed(d).padStart(8);
 /** The same shape the worker posts (see src/client/sim.worker.ts). */
 const snapshot = (p) => ({
   ...p,
-  guests: p.guests.map((g) => ({ ...g, route: null })),
-  staff: p.staff.map((s) => ({ ...s, route: null })),
+  guests: p.guests.map((g) => ({ ...plainWalker(g), route: null })),
+  staff: p.staff.map((s) => ({ ...plainWalker(s), route: null })),
   _guestById: new Map(), _events: [], _fx: [],
 });
 

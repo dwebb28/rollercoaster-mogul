@@ -344,6 +344,8 @@ export interface Walker {
   /** Progress from (x, y) to (nx, ny), 0..1. */
   t: number;
   route: number[] | null;
+  /** Slot in the WASM core's walker table (hidden, never saved). See core.ts. */
+  _w?: number;
 }
 
 export interface Guest extends Walker {

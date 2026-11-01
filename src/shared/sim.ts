@@ -7,7 +7,8 @@ import {
   CUSTOM_COASTER, SHOP_VALUE, AGEING, DESIGN_CODE_PREFIX,
 } from './catalog.ts';
 import * as Coaster from './coaster.ts';
-import { core, syncTiles, setTile } from './core.ts';
+import { core, syncTiles, setTile, freeWalker } from './core.ts';
+import { GuestWalker, StaffWalker } from './walkers.ts';
 import {
   sanitizeSettings, settingDef, CLIMATES, WEATHER, EVENTS, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES,
   isHexColor, weighted,
@@ -362,7 +363,7 @@ export function deserialize(data: any): Park {
   for (const g of data.guests) {
     if (!g || !okPos(g)) continue;
     ensureId(g.id);
-    park.guests.push({
+    park.guests.push(new GuestWalker({
       ...newGuestStats(),
       id: g.id, name: String(g.name ?? 'Guest').slice(0, 20), shirt: String(g.shirt ?? '#fff').slice(0, 9),
       x: g.x, y: g.y, nx: g.nx, ny: g.ny, lx: g.x, ly: g.y, t: num(g.t, 0, 1),
@@ -388,7 +389,7 @@ export function deserialize(data: any): Park {
       umbrella: g.umbrella === true, map: g.map === true, souvenir: g.souvenir === true, atmUsed: g.atmUsed === true,
       // Riders/queuers resume walking; ride state is not persisted.
       state: 'walk',
-    });
+    }));
     const last = park.guests[park.guests.length - 1]!;
     if (last.crime === 'panda' && (last.hp ?? 0) <= 0) last.hp = 1;
   }
@@ -397,11 +398,11 @@ export function deserialize(data: any): Park {
     ensureId(s.id);
     const st = newStaff(s.role, s.id, s.x, s.y);
     applyTraits(st, Array.isArray(s.traits) ? s.traits.filter((t: unknown, i: number, a: unknown[]) => isKey(STAFF_TRAITS, t) && a.indexOf(t) === i).slice(0, 3) : []);
-    park.staff.push({
+    park.staff.push(new StaffWalker({
       ...st, nx: s.nx, ny: s.ny, name: String(s.name ?? '').slice(0, 40),
       hp: num(s.hp, 0, st.maxHp, st.maxHp), acc: num(s.acc, 0, 1, st.acc), down: num(s.down, 0, 600, 0),
       traits: st.traits,
-    });
+    }));
   }
   park.nextId = Math.max(maxId + 1, Number.isInteger(data.nextId) ? data.nextId : 0);
 
@@ -460,6 +461,7 @@ export function deserialize(data: any): Park {
       captured: num(data.raid.captured, 0, 50), escaped: num(data.raid.escaped, 0, 50), loot: num(data.raid.loot, 0, 1e9),
     };
   } else {
+    for (const g of park.guests) if (g.crime === 'panda') freeWalker(g);
     park.guests = park.guests.filter((g) => g.crime !== 'panda');
   }
   if (Array.isArray(data.objectives)) {
@@ -685,9 +687,9 @@ export function hire(park: Park, role: StaffRole) {
   const base = req ? park.objects.find((o) => o.kind === req) : null;
   if (req && !base) return { ok: false, reason: `Build a ${itemDef(req)!.name} first.` };
   const start = base?._access[0];
-  const s = start !== undefined
+  const s = new StaffWalker(start !== undefined
     ? newStaff(role, park.nextId++, start % GRID, (start / GRID) | 0)
-    : newStaff(role, park.nextId++, ENTRANCE.x, ENTRANCE.y - 1);
+    : newStaff(role, park.nextId++, ENTRANCE.x, ENTRANCE.y - 1));
   s.name = `${pick(park, FIRST_NAMES)} the ${STAFF[role].name}`;
   if (STAFF[role].accuracy) s.acc = randIn(park, STAFF[role].accuracy);
   applyTraits(s, rollTraits(park, role));
@@ -728,9 +730,10 @@ export const wageOf = (park: Park, s: Staff) => Math.round(STAFF[s.role].wage * 
 
 export function fire(park: Park, id: number) {
   const i = park.staff.findIndex((s) => s.id === id);
-  if (i >= 0) park.staff.splice(i, 1);
+  if (i >= 0) freeWalker(park.staff.splice(i, 1)[0]!);
 }
 
+/** A plain staff record; wrap it in `new StaffWalker()` before it joins the park. */
 function newStaff(role: StaffRole, id: number, x: number, y: number): Staff {
   const def = STAFF[role];
   const acc = def.accuracy ? (def.accuracy[0] + def.accuracy[1]) / 2 : 0;
@@ -807,6 +810,7 @@ export function step(park: Park, dt: number) {
   for (const s of park.staff) updateStaff(park, s, dt);
 
   if (park.guests.some((g) => g.gone)) {
+    for (const g of park.guests) if (g.gone) freeWalker(g);
     park.guests = park.guests.filter((g) => !g.gone);
     park._guestById = new Map(park.guests.map((g) => [g.id, g]));
   }
@@ -863,7 +867,7 @@ function spawnGuest(park: Park, opts: SpawnOpts = {}) {
   const cash = Math.round((opts.cash ?? randIn(park, T.cash)) * (opts.cash ? 1 : cfg.guestWealth));
   if (cash < park.entranceFee) return null;
   const [pLo, pHi] = T.pref;
-  const g = {
+  const g = new GuestWalker({
     ...newGuestStats(),
     type,
     id: park.nextId++,
@@ -880,9 +884,9 @@ function spawnGuest(park: Park, opts: SpawnOpts = {}) {
     pref: pLo + Math.floor(rand(park) * (pHi - pLo + 1)), // max ride intensity they enjoy
     thrift: rand(park),
     timeIn: 0,
-  };
+  } as Guest);
   if (opts.name) g.name = opts.name;
-  if (!walkable(park, idx(g.nx, g.ny))) return null;
+  if (!walkable(park, idx(g.nx, g.ny))) { freeWalker(g); return null; }
   const crimeRate = (CRIME.baseRate + (park.rating < 400 ? CRIME.lowRatingRate : 0)) * cfg.crimeRate * (T.crime || 1);
   const dealerRate = cfg.drugs ? CRIME.dealerRate * Math.min(1.5, cfg.crimeRate) : 0;
   if (opts.crime) {
@@ -1017,15 +1021,10 @@ function dropLitter(park: Park, x: number, y: number, chance = 0.75) {
   if (park.tiles[i] === TILE.PATH && rand(park) < chance) park.litter[i] = Math.min(5, park.litter[i] + 1);
 }
 
-function moveActor(park: Park, a: Walker, dt: number, speed: number) {
-  if (a.nx === a.x && a.ny === a.y) return true; // standing still: ready for a decision
-  if (!walkable(park, idx(a.nx, a.ny))) { a.nx = a.x; a.ny = a.y; a.t = 0; return true; }
-  a.t += speed * dt;
-  if (a.t < 1) return false;
-  a.lx = a.x; a.ly = a.y;
-  a.x = a.nx; a.y = a.ny;
-  a.t = 0;
-  return true;
+/** One movement tick, run in the WASM core. True when standing on a tile, ready to decide. */
+function moveActor(_park: Park, a: Walker, dt: number, speed: number) {
+  if (a._w === undefined) throw new Error(`${a.name || 'walker'} has no core slot: create it as a GuestWalker or StaffWalker`);
+  return core.walkerStep(a._w, dt, speed);
 }
 
 /** Sets the next tile from the route, or wanders. Returns false if stuck. */
@@ -1695,14 +1694,14 @@ export function startRaid(park: Park) {
     const at = paths[Math.floor(rand(park) * paths.length)]!;
     const x = at % GRID, y = (at / GRID) | 0;
     const name = names.splice(Math.floor(rand(park) * names.length), 1)[0] || `Panda #${k + 1}`;
-    const g: Guest = {
+    const g: Guest = new GuestWalker({
       ...newGuestStats(),
       id: park.nextId++, name, shirt: '#ffffff',
       x, y, nx: x, ny: y, lx: x, ly: y, t: 0,
       cash: 0, happy: 50, hunger: 0, thirst: 0, bladder: 0, energy: 100, nausea: 0, pref: 10, thrift: 0, timeIn: 0,
       crime: 'panda', crimeT: randIn(park, PANDEMONIUM.actEvery),
       maxHp: Math.round(randIn(park, PANDEMONIUM.hp)), acc: randIn(park, PANDEMONIUM.pandaAccuracy), cool: 0,
-    };
+    });
     g.hp = g.maxHp;
     park.guests.push(g);
     park._guestById.set(g.id, g);
@@ -1906,6 +1905,7 @@ function killOfficer(park: Park, s: Staff, killer: Guest) {
   stain(park, idx(s.x, s.y), 3);
   fx(park, { type: 'blood', x: pos.x, y: pos.y, amount: 3 });
   park.staff.splice(park.staff.indexOf(s), 1);
+  freeWalker(s);
   const payout = (PANDEMONIUM.lifeInsurance as Partial<Record<StaffRole, number>>)[s.role] || 0;
   if (payout) spend(park, payout, 'insurance');
   park.fallen.push({ name: s.name, role: s.role, by: killer.name, day: day(park), payout });

@@ -57,3 +57,54 @@ test('tile edits reach the core', async () => {
   bulldoze(park, 10, 10);
   assert.equal(core.tiles[i], 0);
 });
+
+test('walkers keep positions in core memory and behave like plain objects', async () => {
+  const { freeWalker, walkerSlotsInUse, plainWalker } = await import('../src/shared/core.ts');
+  const { StaffWalker } = await import('../src/shared/walkers.ts');
+  const walker = (f) => new StaffWalker(f);
+  const before = walkerSlotsInUse();
+  const a = walker({ id: 1, name: 'A', x: 3, y: 4, nx: 3, ny: 5, lx: 3, ly: 4, t: 0.25, route: null });
+  assert.equal(walkerSlotsInUse(), before + 1);
+  const plain = plainWalker(a);
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(plain).filter(([, v]) => v !== undefined)),
+    { x: 3, y: 4, nx: 3, ny: 5, lx: 3, ly: 4, t: 0.25, id: 1, name: 'A', route: null });
+  assert.equal(plain._w, undefined);
+  assert.equal(JSON.parse(JSON.stringify(a)).ny, 5);
+  assert.equal(structuredClone(plainWalker(a)).t, 0.25);
+  a.x = 9;
+  assert.equal(a.x, 9);
+  freeWalker(a);
+  assert.equal(walkerSlotsInUse(), before);
+  // A reused slot starts clean.
+  const b = walker({ id: 2, name: 'B', x: 1, y: 1, nx: 1, ny: 1, route: null });
+  assert.equal(b.t, 0);
+  assert.equal(b.lx, 0);
+  freeWalker(b);
+});
+
+test('the walker table grows past its first allocation without losing data', async () => {
+  const { freeWalker } = await import('../src/shared/core.ts');
+  const { StaffWalker } = await import('../src/shared/walkers.ts');
+  const walker = (f) => new StaffWalker(f);
+  const list = [];
+  for (let i = 0; i < 5000; i++) list.push(walker({ id: i, name: '', x: i % 40, y: (i / 40) | 0, nx: 0, ny: 0, lx: 0, ly: 0, t: i / 5000, route: null }));
+  for (let i = 0; i < 5000; i++) {
+    assert.equal(list[i].x, i % 40);
+    assert.equal(list[i].t, i / 5000);
+  }
+  // Grid views survive memory growth too.
+  assert.equal(core.tiles.length, GRID * GRID);
+  for (const w of list) freeWalker(w);
+});
+
+test('guests leaving the park give their slots back', async () => {
+  const { walkerSlotsInUse } = await import('../src/shared/core.ts');
+  const Sim = await import('../src/shared/sim.ts');
+  const park = buildStressPark(100, 9);
+  const live = () => park.guests.length + park.staff.length;
+  const base = walkerSlotsInUse() - live();
+  for (let i = 0; i < 3000; i++) Sim.step(park, 0.1);
+  // <= rather than ===: the GC may reclaim other tests' dropped walkers meanwhile.
+  assert.ok(walkerSlotsInUse() - base <= live(), 'slots leaked by departed guests');
+});
