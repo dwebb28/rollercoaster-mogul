@@ -41,7 +41,7 @@ const pieceRows = Object.entries(PIECES).map(([k, p]) => [`${p.icon} \`${k}\``, 
 const md = `# Customization reference
 
 > Generated from the game's data by \`npm run docs\` (scripts/gen-docs.mjs). Don't edit by hand: change
-> \`public/js/options.js\`, \`public/js/catalog.js\` or \`public/js/coaster.js\` and regenerate.
+> \`src/shared/options.ts\`, \`src/shared/catalog.ts\` or \`src/shared/coaster.ts\` and regenerate.
 
 Everything here is persisted with the park. How it's stored, validated and versioned is in
 [PERSISTENCE.md](PERSISTENCE.md).
