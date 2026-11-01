@@ -119,8 +119,8 @@ src/shared/         TypeScript shared by browser, server and tests (strict mode)
   options.ts        settings schema, difficulty presets, climates, weather, events, guest types, staff traits, path styles
   sim.ts            deterministic simulation; no DOM
   coaster.ts        custom coaster track layout and train physics
-  core.ts           loads the WASM core (pathfinding, walker positions and movement so far)
-  walkers.ts        guest and staff classes whose positions live in WASM memory
+  core.ts           loads the WASM core (pathfinding, RNG, walker positions, routes and movement so far)
+  walkers.ts        guest and staff classes whose positions and routes live in WASM memory
   stress.ts         generated large park for benchmarks and the in-game stress test
 src/client/         TypeScript that only runs in the browser
   sim.worker.ts     Web Worker that owns the park and runs the simulation off the main thread

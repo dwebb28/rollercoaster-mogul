@@ -5,8 +5,8 @@
 // the compiler insist the lists match types.ts: add a field there and you
 // must add it here.
 //
-// Positions (x, y, nx, ny, lx, ly, t) are not fields: they're accessors on
-// CoreWalker that read core memory. See core.ts.
+// Positions (x, y, nx, ny, lx, ly, t) and `route` are not fields: they're
+// accessors on CoreWalker backed by core memory. See core.ts.
 
 import { CoreWalker } from './core.ts';
 import type { WalkerInit } from './core.ts';
@@ -15,17 +15,16 @@ import type {
 } from './types.ts';
 
 /** The fields of `T` other than positions and the slot. */
-type Fields<T> = Omit<T, 'x' | 'y' | 'nx' | 'ny' | 'lx' | 'ly' | 't' | '_w'>;
+type Fields<T> = Omit<T, 'x' | 'y' | 'nx' | 'ny' | 'lx' | 'ly' | 't' | '_w' | 'route'> & { route?: number[] | null };
 
 function assignFields(target: object, f: object) {
-  const { x, y, nx, ny, lx, ly, t, _w, ...rest } = f as Record<string, unknown>;
+  const { x, y, nx, ny, lx, ly, t, _w, route, ...rest } = f as Record<string, unknown>;
   Object.assign(target, rest);
 }
 
 export class GuestWalker extends CoreWalker implements Guest {
   id!: number;
   name!: string;
-  route: number[] | null = null;
   type!: GuestTypeKey;
   shirt!: string;
   state!: Guest['state'];
@@ -83,7 +82,6 @@ export class GuestWalker extends CoreWalker implements Guest {
 export class StaffWalker extends CoreWalker implements Staff {
   id!: number;
   name!: string;
-  route: number[] | null = null;
   role!: StaffRole;
   task!: number | null;
   busy!: number;

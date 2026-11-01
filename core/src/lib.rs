@@ -6,21 +6,25 @@
 //! TypeScript side wraps in typed-array views. No wasm-bindgen, no JS glue, so
 //! the same `.wasm` file loads in the browser, the Web Worker and Node.
 //!
-//! Memory rule: the grid buffers are allocated once in `init()`. Only
-//! `walkers_reserve` allocates afterwards; it can move the walker table and
+//! Memory rule: the grid buffers are allocated once in `init()`. Afterwards
+//! `walkers_reserve`, `trace_route` and `route_push` can allocate; it can move the walker table and
 //! grow memory, so JS re-reads `walkers_ptr()` and rebuilds its views after it.
 //!
-//! Migration status: pathfinding and walker movement live here. More systems move over one at a
+//! Migration status: pathfinding, walker movement and routes live here. More systems move over one at a
 //! time; see docs/WASM.md.
 
 pub mod path;
+pub mod rng;
 pub mod walkers;
 
 use path::Grid;
 use walkers::Walkers;
 
 static mut GRID: Option<Grid> = None;
-static mut WALKERS: Walkers = Walkers { rows: Vec::new() };
+static mut WALKERS: Walkers = Walkers { rows: Vec::new(), routes: Vec::new(), has_route: Vec::new() };
+/// RNG hand-off cell: JS writes `park.rngState` here before a call that may
+/// draw random numbers and reads the advanced state back after.
+static mut RNG: u32 = 1;
 
 #[allow(static_mut_refs)]
 fn grid() -> &'static mut Grid {
@@ -37,7 +41,7 @@ fn walkers() -> &'static mut Walkers {
 /// ABI version. Bump when an export's meaning changes; the loader checks it.
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_version() -> u32 {
-    2
+    3
 }
 
 /// Allocates all buffers for a `size × size` map. Call once before anything else.
@@ -87,6 +91,84 @@ pub extern "C" fn walkers_ptr() -> *mut f64 {
 /// standing on a tile, ready for its next decision.
 #[unsafe(no_mangle)]
 pub extern "C" fn walker_step(slot: u32, dt: f64, speed: f64) -> u32 {
+    if !live(slot) { return 1; }
     let g = grid();
     walkers().step(slot as usize, dt, speed, &g.tiles, g.size) as u32
+}
+
+/// Freed walkers carry slot -1 (u32::MAX here); ignore any out-of-range slot.
+fn live(slot: u32) -> bool {
+    (slot as usize) < walkers().has_route.len()
+}
+
+#[allow(static_mut_refs)]
+fn rng_cell() -> &'static mut u32 {
+    // SAFETY: wasm32-unknown-unknown is single-threaded.
+    unsafe { &mut RNG }
+}
+
+/// Address of the RNG hand-off cell (one u32).
+#[unsafe(no_mangle)]
+pub extern "C" fn rng_ptr() -> *mut u32 {
+    rng_cell()
+}
+
+/// Draws one number from the RNG cell (parity tests compare it with JS rand()).
+#[unsafe(no_mangle)]
+pub extern "C" fn rng_next() -> f64 {
+    rng::next(rng_cell())
+}
+
+/// Builds walker `slot`'s route from `start` to `goal` using the last BFS.
+/// Returns 1 if there is one. May allocate.
+#[unsafe(no_mangle)]
+pub extern "C" fn trace_route(slot: u32, start: u32, goal: u32) -> u32 {
+    if !live(slot) { return 0; }
+    let g = grid();
+    walkers().trace(slot as usize, start as usize, goal as usize, &g.prev) as u32
+}
+
+/// Next route step, or wander. Draws from the RNG cell. Returns 1 if it moved.
+#[unsafe(no_mangle)]
+pub extern "C" fn walker_advance(slot: u32, allow_entrance: u32) -> u32 {
+    if !live(slot) { return 0; }
+    let g = grid();
+    walkers().advance(slot as usize, allow_entrance != 0, &g.tiles, g.size, rng_cell()) as u32
+}
+
+/// Steps left on walker `slot`'s route; -1 when it has none.
+#[unsafe(no_mangle)]
+pub extern "C" fn route_len(slot: u32) -> i32 {
+    if !live(slot) { return -1; }
+    walkers().route_len(slot as usize)
+}
+
+/// Removes walker `slot`'s route (JS `route = null`).
+#[unsafe(no_mangle)]
+pub extern "C" fn route_clear(slot: u32) {
+    if !live(slot) { return; }
+    walkers().clear_route(slot as usize);
+}
+
+/// Gives walker `slot` an empty route (JS `route = []`); fill it with route_push.
+#[unsafe(no_mangle)]
+pub extern "C" fn route_begin(slot: u32) {
+    if !live(slot) { return; }
+    let w = walkers();
+    w.routes[slot as usize].clear();
+    w.has_route[slot as usize] = true;
+}
+
+/// Prepends a step to walker `slot`'s route (routes are stored reversed). May allocate.
+#[unsafe(no_mangle)]
+pub extern "C" fn route_push(slot: u32, tile: u32) {
+    if !live(slot) { return; }
+    walkers().routes[slot as usize].push(tile as u16);
+}
+
+/// The route's steps, last step first (read `route_len` of them). Valid until the next call.
+#[unsafe(no_mangle)]
+pub extern "C" fn route_ptr(slot: u32) -> *const u16 {
+    if !live(slot) { return core::ptr::null(); }
+    walkers().routes[slot as usize].as_ptr()
 }

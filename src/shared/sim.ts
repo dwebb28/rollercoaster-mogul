@@ -232,7 +232,7 @@ function refreshAccess(park: Park) {
     }
     obj._access = access;
   }
-  for (const a of [...park.guests, ...park.staff]) a.route = null;
+  for (const a of [...park.guests, ...park.staff]) clearRoute(a);
 }
 
 /** JSON-safe save document (the shape of Park minus transient fields). */
@@ -776,14 +776,15 @@ function bfs(park: Park, start: number, allowEntrance = false) {
   return core;
 }
 
-function traceRoute(prev: Int32Array, start: number, goal: number) {
-  const route = [];
-  for (let c = goal; c !== start; c = prev[c]) {
-    if (c < 0) return null;
-    route.push(c);
-  }
-  return route.reverse();
-}
+// Routes live in the WASM core, per walker (see core/src/walkers.rs).
+
+/** Gives `a` the route from `start` to `goal` from the last bfs(). False if unreachable. */
+const traceRoute = (a: Walker, start: number, goal: number) => core.traceRoute(a._w!, start, goal);
+/** True when `a` has a route, even an exhausted one (it then wanders until it decides again). */
+const hasRoute = (a: Walker) => core.routeLen(a._w!) >= 0;
+/** Steps left on `a`'s route; -1 when it has none. */
+const routeLeft = (a: Walker) => core.routeLen(a._w!);
+const clearRoute = (a: Walker) => core.clearRoute(a._w!);
 
 /** Nearest access tile of `obj` from a BFS result, or null if unreachable. */
 function nearestAccess(obj: ParkObject, dist: Int16Array) {
@@ -930,7 +931,7 @@ function startLeaving(park: Park, g: Guest, reason?: string) {
   if (g.leaving) return;
   g.leaving = true;
   g.target = null;
-  g.route = null;
+  clearRoute(g);
   if (reason) think(park, g, reason);
 }
 
@@ -1027,30 +1028,10 @@ function moveActor(_park: Park, a: Walker, dt: number, speed: number) {
   return core.walkerStep(a._w, dt, speed);
 }
 
-/** Sets the next tile from the route, or wanders. Returns false if stuck. */
+/** Sets the next tile from the route, or wanders (in the WASM core). Returns false if stuck. */
 function advance(park: Park, a: Walker, allowEntrance = false) {
-  if (a.route?.length) {
-    const n = a.route.shift()!;
-    const nx = n % GRID, ny = (n / GRID) | 0;
-    if (Math.abs(nx - a.x) + Math.abs(ny - a.y) === 1 && walkable(park, n)) {
-      a.nx = nx; a.ny = ny;
-      return true;
-    }
-    a.route = null;
-  }
-  const options = [];
-  for (const [dx, dy] of DIRS) {
-    const x = a.x + dx, y = a.y + dy;
-    if (!inBounds(x, y)) continue;
-    const i = idx(x, y);
-    if (!walkable(park, i) || (!allowEntrance && park.tiles[i] === TILE.ENTRANCE)) continue;
-    options.push([x, y]);
-  }
-  if (!options.length) { a.nx = a.x; a.ny = a.y; return false; }
-  const forward = options.filter(([x, y]) => x !== a.lx || y !== a.ly);
-  const [x, y] = pick(park, forward.length ? forward : options);
-  a.nx = x; a.ny = y;
-  return true;
+  syncTiles(park);
+  return core.walkerAdvance(a._w!, allowEntrance, park);
 }
 
 function walkGuest(park: Park, g: Guest, dt: number) {
@@ -1115,17 +1096,17 @@ function onArrive(park: Park, g: Guest, here: number) {
 function decide(park: Park, g: Guest, here: number) {
   if (g.leaving && (g.high > 0 || park.locked)) {
     // Too high to find the exit, or the exits are sealed: wander.
-    g.route = null;
+    clearRoute(g);
     if (g.high > 0 && rand(park) < 0.05) think(park, g, "I can't find the exit... where am I?");
     advance(park, g);
     return;
   }
   if (g.leaving) {
-    if (!g.route) {
-      const { prev } = bfs(park, here, true);
-      g.route = traceRoute(prev, here, idx(ENTRANCE.x, ENTRANCE.y));
+    if (!hasRoute(g)) {
+      bfs(park, here, true);
+      traceRoute(g, here, idx(ENTRANCE.x, ENTRANCE.y));
     }
-    if (!g.route) g.gone = true; // trapped on a disconnected path: walk off-map
+    if (!hasRoute(g)) g.gone = true; // trapped on a disconnected path: walk off-map
     else advance(park, g, true);
     return;
   }
@@ -1134,11 +1115,11 @@ function decide(park: Park, g: Guest, here: number) {
     const obj = getObject(park, g.target);
     if (!obj) g.target = null;
     else if (obj._access.includes(here)) { interact(park, g, obj, here); return; }
-    else if (!g.route) {
-      const { dist, prev } = bfs(park, here);
+    else if (!hasRoute(g)) {
+      const { dist } = bfs(park, here);
       const goal = nearestAccess(obj, dist);
-      g.route = goal === null ? null : traceRoute(prev, here, goal);
-      if (!g.route) g.target = null;
+      if (goal === null) clearRoute(g); else traceRoute(g, here, goal);
+      if (!hasRoute(g)) g.target = null;
     }
   }
 
@@ -1183,7 +1164,7 @@ function pickGoal(park: Park, g: Guest, here: number) {
   else if (g.energy < 35) need = 'seat';
   else if (!g.souvenir && g.happy > 60 && g.cash > 15 && rand(park) < T.souvenir * 0.15) need = 'souvenir';
 
-  const { dist, prev } = bfs(park, here);
+  const { dist } = bfs(park, here);
   let best: ParkObject | null = null, bestScore = -Infinity, bestGoal = -1;
   for (const obj of park.objects) {
     if (!obj._access.length) continue;
@@ -1210,7 +1191,7 @@ function pickGoal(park: Park, g: Guest, here: number) {
   }
   if (!need && !g.map && rand(park) < 0.25) return; // sometimes just wander (a map helps)
   g.target = best.id;
-  g.route = traceRoute(prev, here, bestGoal);
+  traceRoute(g, here, bestGoal);
 }
 
 function rideValue(park: Park, def: RideDef, g: Guest) {
@@ -1219,7 +1200,7 @@ function rideValue(park: Park, def: RideDef, g: Guest) {
 
 function interact(park: Park, g: Guest, obj: ParkObject, here: number) {
   g.target = null;
-  g.route = null;
+  clearRoute(g);
   if (g.heist === obj.id) return commitHeist(park, g, obj);
   if (obj.kind === 'retribution') return watchShow(park, g, obj);
   const ride = rideDef(obj);
@@ -1362,20 +1343,20 @@ function updateStaff(park: Park, s: Staff, dt: number) {
   if (!moveActor(park, s, dt, (hurry ? STAFF_SPEED * 1.5 : STAFF_SPEED) * traitMul(s, 'speed'))) return;
   const here = idx(s.x, s.y);
   if (!walkable(park, here)) { // path was removed underneath them
-    s.x = s.nx = ENTRANCE.x; s.y = s.ny = ENTRANCE.y - 1; s.t = 0; s.route = null;
+    s.x = s.nx = ENTRANCE.x; s.y = s.ny = ENTRANCE.y - 1; s.t = 0; clearRoute(s);
     return;
   }
   if (s.nx !== s.x || s.ny !== s.y) return;
 
   if (s.role === 'janitor') {
     if (park.litter[here] > 0 || park.stains[here] > 0) { s.busy = (1.2 + park.stains[here] * 0.8) / traitMul(s, 'workSpeed'); s.job = here; return; }
-    if (!s.route) {
-      const { dist, prev } = bfs(park, here);
+    if (!hasRoute(s)) {
+      const { dist } = bfs(park, here);
       let best = -1;
       for (let i = 0; i < park.litter.length; i++) {
         if ((park.litter[i] || park.stains[i]) && dist[i] >= 0 && dist[i] <= 14 && (best < 0 || dist[i] < dist[best])) best = i;
       }
-      if (best >= 0) s.route = traceRoute(prev, here, best);
+      if (best >= 0) traceRoute(s, here, best);
     }
   } else if (s.role === 'guard') {
     if (guardStep(park, s, here)) return;
@@ -1386,20 +1367,20 @@ function updateStaff(park: Park, s: Staff, dt: number) {
     if (!ride || !ride.broken) {
       s.task = null;
       ride = null;
-      const { dist, prev } = bfs(park, here);
+      const { dist } = bfs(park, here);
       let bestD = Infinity, bestGoal = -1;
       for (const o of park.objects) {
         if (!o.broken || park.staff.some((m) => m !== s && m.task === o.id)) continue;
         const goal = nearestAccess(o, dist);
         if (goal !== null && dist[goal] < bestD) { bestD = dist[goal]; ride = o; bestGoal = goal; }
       }
-      if (ride) { s.task = ride.id; s.route = traceRoute(prev, here, bestGoal); }
+      if (ride) { s.task = ride.id; traceRoute(s, here, bestGoal); }
     }
-    if (ride && ride._access.includes(here)) { s.busy = 4 / traitMul(s, 'workSpeed'); s.job = ride.id; s.route = null; return; }
-    if (ride && !s.route) {
-      const { dist, prev } = bfs(park, here);
+    if (ride && ride._access.includes(here)) { s.busy = 4 / traitMul(s, 'workSpeed'); s.job = ride.id; clearRoute(s); return; }
+    if (ride && !hasRoute(s)) {
+      const { dist } = bfs(park, here);
       const goal = nearestAccess(ride, dist);
-      if (goal !== null) s.route = traceRoute(prev, here, goal);
+      if (goal !== null) traceRoute(s, here, goal);
     }
   }
   advance(park, s);
@@ -1528,7 +1509,7 @@ function planCrime(park: Park, g: Guest) {
     const t = targets[Math.floor(rand(park) * Math.min(3, targets.length))]!;
     g.heist = t.id;
     g.target = t.id;
-    g.route = null;
+    clearRoute(g);
     g.crimeT = 9999; // acts on arrival
     return;
   }
@@ -1602,7 +1583,7 @@ function afterCrime(park: Park, g: Guest, cov: Coverage, flee: boolean) {
   if (guard || (cov.camera && rand(park) < CRIME.cameraSpotChance)) g.spotted = true;
   if (guard && !guard.chase) {
     guard.chase = g.id;
-    guard.route = null;
+    clearRoute(guard);
   }
   if (flee || g.crimes >= (g.crime === 'dealer' ? 8 : 3)) startLeaving(park, g);
 }
@@ -1636,9 +1617,9 @@ function guardStep(park: Park, s: Staff, here: number) {
   const g = park._guestById.get(s.chase);
   if (!g || g.gone) { s.chase = null; return false; }
   const goal = g.state === 'queue' && g.queueAt >= 0 ? g.queueAt : idx(g.nx, g.ny);
-  const { prev } = bfs(park, here, true);
-  s.route = traceRoute(prev, here, goal);
-  if (!s.route) { s.chase = null; return false; }
+  bfs(park, here, true);
+  traceRoute(s, here, goal);
+  if (!hasRoute(s)) { s.chase = null; return false; }
   advance(park, s, true);
   return true;
 }
@@ -1725,7 +1706,7 @@ function updatePanda(park: Park, g: Guest, dt: number) {
     return;
   }
   if (!park.raid) { g.gone = true; return; }
-  if (g.leaving && park.locked) { g.leaving = false; g.route = null; think(park, g, "They've locked us in!"); }
+  if (g.leaving && park.locked) { g.leaving = false; clearRoute(g); think(park, g, "They've locked us in!"); }
   if (!g.leaving && !park.locked && park.time - park.raid.startedAt > PANDEMONIUM.raidSeconds) {
     startLeaving(park, g, 'Grab the loot and scatter!');
   }
@@ -1737,10 +1718,10 @@ function updatePanda(park: Park, g: Guest, dt: number) {
 
   if (g.leaving) {
     if (park.tiles[here] === TILE.ENTRANCE) return pandaEscapes(park, g);
-    if (!g.route) {
-      const { prev } = bfs(park, here, true);
-      g.route = traceRoute(prev, here, idx(ENTRANCE.x, ENTRANCE.y));
-      if (!g.route) return pandaEscapes(park, g);
+    if (!hasRoute(g)) {
+      bfs(park, here, true);
+      traceRoute(g, here, idx(ENTRANCE.x, ENTRANCE.y));
+      if (!hasRoute(g)) return pandaEscapes(park, g);
     }
     advance(park, g, true);
     return;
@@ -1753,7 +1734,7 @@ function updatePanda(park: Park, g: Guest, dt: number) {
     g.robT = PANDEMONIUM.robCooldown;
     robTill(park, g, target);
     g.target = null;
-    g.route = null;
+    clearRoute(g);
     return;
   }
   if (g.crimeT <= 0) {
@@ -1768,13 +1749,13 @@ function updatePanda(park: Park, g: Guest, dt: number) {
       logIncident(park, 'assault', `${g.name} of Pandemonium assaulted ${v.name}.`);
     }
   }
-  if (!target || !g.route?.length) {
+  if (!target || routeLeft(g) <= 0) {
     const tills = park.objects.filter((o) => o.stats && o._access.length);
     if (tills.length) {
       const t = tills[Math.floor(rand(park) * tills.length)];
-      const { dist, prev } = bfs(park, here);
+      const { dist } = bfs(park, here);
       const goal = nearestAccess(t, dist);
-      if (goal !== null) { g.target = t.id; g.route = traceRoute(prev, here, goal); }
+      if (goal !== null) { g.target = t.id; traceRoute(g, here, goal); }
     }
   }
   advance(park, g);
@@ -1859,7 +1840,7 @@ function squadShoot(park: Park, s: Staff, dt: number) {
   if (target.hp <= 0) {
     target.state = 'downed';
     target.busy = PANDEMONIUM.downedSeconds;
-    target.route = null;
+    clearRoute(target);
     target.nx = target.x; target.ny = target.y; target.t = 0;
     think(park, target, 'Bested by a hot dog...', true);
   }
@@ -1890,7 +1871,7 @@ function pandaFight(park: Park, g: Guest, dt: number) {
   }
   target.down = PANDEMONIUM.knockoutSeconds;
   target.chase = null;
-  target.route = null;
+  clearRoute(target);
   target.busy = 0;
   target.nx = target.x; target.ny = target.y; target.t = 0;
   stain(park, idx(target.x, target.y), 1);
@@ -1973,14 +1954,14 @@ function squadStep(park: Park, s: Staff, here: number) {
   if (!park.raid) return false;
   const pandas = park.guests.filter((g) => g.crime === 'panda' && !g.gone && g.state !== 'downed');
   if (!pandas.length) return false;
-  const { dist, prev } = bfs(park, here, true);
+  const { dist } = bfs(park, here, true);
   let goal = -1;
   for (const g of pandas) {
     const i = idx(g.nx, g.ny);
     if (dist[i] >= 0 && (goal < 0 || dist[i] < dist[goal])) goal = i;
   }
   if (goal < 0 || goal === here) return false;
-  s.route = traceRoute(prev, here, goal);
+  traceRoute(s, here, goal);
   advance(park, s, true);
   return true;
 }
@@ -1999,7 +1980,7 @@ export function execute(park: Park, id: number, mode: string) {
   for (const g of park.guests) {
     if (g.crime || g.leaving || g.state !== 'walk' || g.injured) continue;
     g.target = rig.id;
-    g.route = null;
+    clearRoute(g);
   }
   const how = rig.pit === 'fire' ? 'launched into the fire pit' : 'drowned in the dunk tank';
   logIncident(park, 'execution', `${victims.join(', ')} ${victims.length > 1 ? 'were' : 'was'} ${how}.`);
@@ -2189,7 +2170,7 @@ export function installFence(park: Park) {
 export function setLocked(park: Park, locked: boolean) {
   if (!park.fence) return { ok: false, reason: 'Install barbed wire fencing first.' };
   park.locked = !!locked;
-  for (const a of [...park.guests, ...park.staff]) a.route = null;
+  for (const a of [...park.guests, ...park.staff]) clearRoute(a);
   park._events.push(park.locked
     ? { type: 'raid', text: '🔒 LOCKDOWN: the exits are sealed. Nobody gets in or out.' }
     : { type: 'info', text: '🔓 Lockdown lifted. The gates are open.' });
