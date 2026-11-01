@@ -116,10 +116,14 @@ src/shared/         TypeScript shared by browser, server and tests (strict mode)
   options.ts        settings schema, difficulty presets, climates, weather, events, guest types, staff traits, path styles
   sim.ts            deterministic simulation; no DOM
   coaster.ts        custom coaster track layout and train physics
+src/client/         TypeScript that only runs in the browser
+  sim.worker.ts     Web Worker that owns the park and runs the simulation off the main thread
+  simclient.ts      page-side handle: a read-only park mirror plus act() for changes
+  protocol.ts       typed messages between the two
 public/
   index.html        landing page: sign-in + leaderboard
   game.html         the game
-  js/shared/        compiled from src/shared by `npm run build` (generated, not committed)
+  js/gen/           compiled from src/ by `npm run build` (generated, not committed)
   js/render3d.js    Three.js WebGL renderer: lighting, shadows, instanced crowds, coaster track
   js/render.js      2D isometric canvas fallback when WebGL is unavailable
   js/main.js        UI, input, game loop, autosave
@@ -132,6 +136,10 @@ scripts/gen-docs.mjs
 
 Saves are versioned JSON documents (currently v2, with v1 migrated automatically). See [docs/PERSISTENCE.md](docs/PERSISTENCE.md) for the full format and the plan for production infrastructure.
 
-The simulation runs in the browser. On every save, the server parses the park with the same `sim.ts` (`deserialize`), validating and clamping all values, and computes the leaderboard numbers from that parsed state. State-changing requests require a custom header as a CSRF defence.
+The simulation runs in a **Web Worker**, so heavy sim turns never stall rendering or input. The worker owns the authoritative park and steps it at a fixed 0.1 s game-time rate. After each batch of steps, or after any player action, it posts a snapshot.
+
+The page keeps that snapshot as a read-only mirror (`state.park`). Reads such as lookups, stats, placement checks and the coaster builder's piece checks run on the mirror synchronously, using the same `sim.ts` helpers. Every change is a typed message (`act('build', kind, x, y)`, `act('sentence', id, 'fine')`…). The worker applies it from an allow-list of actions, posts the new snapshot, then replies with the result, so the mirror is already up to date when the reply arrives. Saving asks the worker to serialize. `window.mogul.sim` exposes the client for debugging (`sim.batch([...])`, `sim.stats`).
+
+the server parses the park with the same `sim.ts` (`deserialize`), validating and clamping all values, and computes the leaderboard numbers from that parsed state. State-changing requests require a custom header as a CSRF defence.
 
 **Known limitation:** because the sim runs on the client, a determined player could still edit their save before uploading it. A cheat-proof leaderboard would need the server to replay the player's build actions.

@@ -3,4 +3,4 @@ data/
 .env
 *.db
 *.db-*
-public/js/shared/
+public/js/gen/

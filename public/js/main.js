@@ -1,13 +1,27 @@
 import { api, money, el } from './api.js';
-import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, PANDEMONIUM, CRIME, OBJECTIVES, PATH_COST, GRID, itemDef, itemCategory } from './shared/catalog.js';
-import * as Sim from './shared/sim.js';
+import { RIDES, STALLS, SCENERY, STAFF, SPECIAL, PANDEMONIUM, CRIME, OBJECTIVES, PATH_COST, GRID, itemDef, itemCategory } from './gen/shared/catalog.js';
+import * as Sim from './gen/shared/sim.js';
+import { SimClient } from './gen/client/simclient.js';
 import { Renderer } from './render.js';
 import { Renderer3D, webglAvailable } from './render3d.js';
-import { PIECES, MAX_STEPS, METERS, STEP as HEIGHT_STEP } from './shared/coaster.js';
-import { SETTINGS_SCHEMA, DIFFICULTIES, defaultSettings, CLIMATES, WEATHER, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES, PAINT } from './shared/options.js';
+import { PIECES, MAX_STEPS, METERS, STEP as HEIGHT_STEP } from './gen/shared/coaster.js';
+import { SETTINGS_SCHEMA, DIFFICULTIES, defaultSettings, CLIMATES, WEATHER, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES, PAINT } from './gen/shared/options.js';
 
-const STEP = 0.1; // fixed simulation step in game-seconds
 const AUTOSAVE_MS = 45_000;
+
+// The simulation runs in a Web Worker. `state.park` is a read-only mirror of
+// it, replaced by every snapshot; changes go through act(), which resolves
+// once the worker has applied them.
+const sim = new SimClient(new URL('./gen/client/sim.worker.js', import.meta.url));
+
+/** Sends a player action to the worker. Resolves with its result; errors become warnings. */
+function act(method, ...args) {
+  state.dirty = true;
+  return sim.act(method, ...args).catch((err) => {
+    toast(err.message, 'warn');
+    return { ok: false, reason: err.message };
+  });
+}
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('view');
@@ -55,11 +69,16 @@ async function boot() {
   $('me-name').textContent = state.me.displayName;
   if (state.me.avatarUrl) Object.assign($('me-avatar'), { src: state.me.avatarUrl, hidden: false });
 
+  sim.onSnapshot = (park, simulated) => {
+    state.park = park;
+    if (simulated > 0) state.dirty = true;
+  };
+  sim.onAction = () => { refreshPanel(); if (state.palette) renderPalette(); };
   try {
-    state.park = Sim.deserialize(await api('/api/park'));
+    await sim.load(await api('/api/park'));
   } catch (err) {
     if (err.status !== 404) toast(`Could not load your park (${err.message}). Starting fresh.`, 'warn');
-    state.park = Sim.createPark(`${state.me.displayName.split(' ')[0]}'s Park`);
+    await sim.newPark(`${state.me.displayName.split(' ')[0]}'s Park`, randomSeed());
     openSetup({ fresh: true });
   }
   state.lastSave = Date.now();
@@ -77,7 +96,6 @@ async function boot() {
 // ---------------------------------------------------------------------------
 
 let last = performance.now();
-let acc = 0;
 let hudT = 0;
 let animT = 0;
 
@@ -85,20 +103,11 @@ function frame(now) {
   const dt = Math.min(0.25, (now - last) / 1000);
   last = now;
   const { park } = state;
+  if (!park) { requestAnimationFrame(frame); return; }
 
-  if (state.speed > 0) {
-    acc += dt * state.speed;
-    let steps = 0;
-    while (acc >= STEP && steps < 60) {
-      Sim.step(park, STEP);
-      acc -= STEP;
-      steps++;
-    }
-    if (steps) state.dirty = true;
-    animT += dt * Math.min(state.speed, 2);
-  }
-
-  for (const ev of Sim.drainEvents(park)) toast(ev.text, ev.type);
+  if (state.speed > 0) animT += dt * Math.min(state.speed, 2);
+  for (const ev of sim.drainEvents()) toast(ev.text, ev.type);
+  park._fx = sim.drainFx();
 
   renderer.render(park, {
     time: animT,
@@ -258,44 +267,48 @@ function applyTool(tile, { drag = false } = {}) {
   const { park } = state;
   if (!Sim.inBounds(tile.x, tile.y)) return;
   if (state.tool === 'path') {
-    const res = Sim.buildPath(park, tile.x, tile.y, state.pathStyle);
-    if (res.ok) renderer.floatText(tile.x + 0.5, tile.y + 0.5, `-$${res.repainted ? 2 : PATH_COST}`, '#ffd9d9');
-    else buildError(res);
+    act('buildPath', tile.x, tile.y, state.pathStyle).then((res) => {
+      if (res.ok) renderer.floatText(tile.x + 0.5, tile.y + 0.5, `-$${res.repainted ? 2 : PATH_COST}`, '#ffd9d9');
+      else buildError(res);
+    });
   } else if (state.tool === 'bulldoze') {
-    const res = Sim.bulldoze(park, tile.x, tile.y);
-    if (res.ok) {
-      if (res.refund) renderer.floatText(tile.x + 0.5, tile.y + 0.5, `+${money(res.refund)}`, '#c8ffc8');
-      if (state.selected && !Sim.getObject(park, state.selected)) closePanel();
-    } else if (!drag) buildError(res);
+    act('bulldoze', tile.x, tile.y).then((res) => {
+      if (res.ok) {
+        if (res.refund) renderer.floatText(tile.x + 0.5, tile.y + 0.5, `+${money(res.refund)}`, '#c8ffc8');
+        if (state.selected && !Sim.getObject(state.park, state.selected)) closePanel();
+      } else if (!drag) buildError(res);
+    });
   } else if (state.tool === 'build') {
     const def = itemDef(state.buildKind);
     if (drag && (def.w > 1 || def.h > 1 || itemCategory(state.buildKind) !== 'scenery')) return;
     const { x, y } = anchorFor(def, tile);
-    const res = Sim.build(park, state.buildKind, x, y);
-    if (res.ok) {
-      renderer.floatText(x + def.w / 2, y + def.h / 2, `-${money(def.cost)}`, '#ffd9d9');
-      if (res.warn) toast(res.warn);
-      renderPalette();
-    } else if (!drag) buildError(res);
+    act('build', state.buildKind, x, y).then((res) => {
+      if (res.ok) {
+        renderer.floatText(x + def.w / 2, y + def.h / 2, `-${money(def.cost)}`, '#ffd9d9');
+        if (res.warn) toast(res.warn);
+        renderPalette();
+      } else if (!drag) buildError(res);
+    });
   } else if (state.tool === 'coaster-start') {
     if (drag) return;
     if (state.importCode) {
-      const res = Sim.importDesign(park, tile.x, tile.y, state.coasterDir, state.importCode);
-      if (!res.ok) { toast(res.reason, 'warn'); return; }
-      state.importCode = null;
-      state.palette = null;
-      setTool('inspect');
-      state.dirty = true;
-      toast(`${res.obj.name} built from its design code. Test it, then open it.`);
-      openBuilder(res.obj.id);
+      act('importDesign', tile.x, tile.y, state.coasterDir, state.importCode).then((res) => {
+        if (!res.ok) { toast(res.reason, 'warn'); return; }
+        state.importCode = null;
+        state.palette = null;
+        setTool('inspect');
+        toast(`${res.obj.name} built from its design code. Test it, then open it.`);
+        openBuilder(res.obj.id);
+      });
       return;
     }
-    const res = Sim.startCoaster(park, tile.x, tile.y, state.coasterDir);
-    if (!res.ok) { buildError(res); return; }
-    renderer.floatText(tile.x + 0.5, tile.y + 0.5, `-${money(PIECES.station.cost)}`, '#ffd9d9');
-    state.palette = null;
-    setTool('inspect');
-    openBuilder(res.obj.id);
+    act('startCoaster', tile.x, tile.y, state.coasterDir).then((res) => {
+      if (!res.ok) { buildError(res); return; }
+      renderer.floatText(tile.x + 0.5, tile.y + 0.5, `-${money(PIECES.station.cost)}`, '#ffd9d9');
+      state.palette = null;
+      setTool('inspect');
+      openBuilder(res.obj.id);
+    });
   } else if (state.tool === 'inspect') {
     inspect(tile);
     return;
@@ -371,8 +384,8 @@ const stepper = (value, onDown, onUp) => el('div', { class: 'stepper' },
 const FREE = new Set(['restroom', 'firstaid']);
 const CRIME_ICON = { theft: '👛', assault: '🤕', heist: '💰', homicide: '🩸', arrest: '🚓', raid: '🐼', execution: '⚖️' };
 
-function hireStaff(role) {
-  const res = Sim.hire(state.park, role);
+async function hireStaff(role) {
+  const res = await act('hire', role);
   if (!res.ok) { toast(res.reason, 'warn'); return; }
   state.dirty = true;
   const traits = res.staff.traits.map((t) => `${STAFF_TRAITS[t].icon} ${STAFF_TRAITS[t].label}`).join(', ');
@@ -414,8 +427,8 @@ function updateCustody() {
   const key = `${c.id}|${n}|${!!rig}|${rig?.show ? 1 : 0}`;
   if (key === custodyKey) return;
   custodyKey = key;
-  const decide = (verdict, mode) => {
-    const res = Sim.sentence(park, c.id, verdict, mode);
+  const decide = async (verdict, mode) => {
+    const res = await act('sentence', c.id, verdict, mode);
     if (!res.ok) { toast(res.reason, 'warn'); return; }
     if (verdict === 'fine') toast(`${c.name} paid a ${money(res.fine)} fine.`);
     if (verdict === 'release') toast(`${c.name} was released.`);
@@ -483,11 +496,10 @@ function traitBadges(traits) {
 
 const PIECE_ORDER = ['straight', 'left', 'right', 'wideLeft', 'wideRight', 'up', 'down', 'steepUp', 'steepDown', 'lift', 'booster', 'brake', 'loop', 'station'];
 
-function builderAction(fn) {
-  const res = fn();
+async function builderAction(fn) {
+  const res = await fn();
   if (res && res.ok === false && res.reason) toast(res.reason, 'warn');
   if (state.builder) state.builder.lastTest = null;
-  state.dirty = true;
   refreshPanel(true);
   return res;
 }
@@ -590,7 +602,7 @@ const PANELS = {
     const test = b.lastTest;
     return el('div', { class: 'builder' },
       el('h2', {}, `🛠️ ${o.name}`),
-      el('input', { class: 'text', value: o.name, maxlength: 40, onchange: (e) => { Sim.renameRide(park, id, e.target.value); state.dirty = true; e.target.blur(); } }),
+      el('input', { class: 'text', value: o.name, maxlength: 40, onchange: (e) => { act('renameRide', id, e.target.value); state.dirty = true; e.target.blur(); } }),
       kv([
         ['Pieces', o.track.pieces.length],
         ['Track height here', `${c.h * HEIGHT_STEP * METERS} m (max ${MAX_STEPS * HEIGHT_STEP * METERS} m)`],
@@ -605,20 +617,19 @@ const PANELS = {
           class: 'piece', disabled: !check.ok, title: check.ok ? `${def.name} (${money(def.cost)})` : check.reason,
           onmouseenter: () => { b.hoverPiece = type; b.hoverOk = check.ok; },
           onmouseleave: () => { if (b.hoverPiece === type) b.hoverPiece = null; },
-          onclick: () => builderAction(() => Sim.addPiece(park, id, type)),
+          onclick: () => builderAction(() => act('addPiece', id, type)),
         }, el('span', { class: 'icon' }, def.icon), el('span', {}, def.name), el('span', { class: 'muted small' }, money(def.cost)));
       })),
       el('div', { class: 'actions' },
-        el('button', { class: 'btn', onclick: () => builderAction(() => {
-          const res = Sim.removePiece(park, id);
+        el('button', { class: 'btn', onclick: () => builderAction(async () => {
+          const res = await act('removePiece', id);
           if (res.removed) { closePanel(); toast('Coaster removed and refunded.'); }
           return res;
         }) }, o.track.pieces.length > 1 ? '↶ Undo piece' : 'Remove coaster'),
-        el('button', { class: 'btn', disabled: !complete, onclick: () => { b.lastTest = Sim.testCoaster(park, id); refreshPanel(true); } }, '🧪 Test run'),
-        el('button', { class: 'btn btn-primary', disabled: !complete, onclick: () => {
-          const res = Sim.openCoaster(park, id);
+        el('button', { class: 'btn', disabled: !complete, onclick: async () => { b.lastTest = await act('testCoaster', id); refreshPanel(true); } }, '🧪 Test run'),
+        el('button', { class: 'btn btn-primary', disabled: !complete, onclick: async () => {
+          const res = await act('openCoaster', id);
           if (!res.ok) { b.lastTest = res; refreshPanel(true); return; }
-          state.dirty = true;
           showPanel({ type: 'object', id });
         } }, '🎢 Open coaster')),
       test && designView(test),
@@ -678,7 +689,7 @@ const PANELS = {
     return el('div', {},
       el('h2', {}, Sim.objName(o)),
       el('p', { class: 'muted small' }, ride ? `${ride.coaster ? 'Roller coaster' : 'Flat ride'} · ${status}` : `Shop · ${status}`),
-      nameInput(Sim.objName(o), (v) => { Sim.renameObject(park, id, v); refreshPanel(true); }),
+      nameInput(Sim.objName(o), (v) => { act('renameObject', id, v); refreshPanel(true); }),
       kv([
         ride && ['Thrill', `${ride.excitement}/10`],
         ride && ['Intensity', `${ride.intensity}/10`],
@@ -694,19 +705,19 @@ const PANELS = {
         ['Breakdown chance per cycle', `${failPct.toFixed(1)}%`],
       ]),
       ride && park.settings.ageing && age > 3 && el('div', { class: 'actions' }, el('button', {
-        class: 'btn btn-small', onclick: () => {
-          const res = Sim.refurbish(park, id);
+        class: 'btn btn-small', onclick: async () => {
+          const res = await act('refurbish', id);
           if (!res.ok) toast(res.reason, 'warn'); else toast(`${Sim.objName(o)} refurbished for ${money(res.cost)}. It's as reliable as new.`);
           state.dirty = true; refreshPanel(true);
         },
       }, `🔧 Refurbish (${money(Sim.refurbishCost(o))})`)),
       el('h3', {}, o.kind === 'custom' ? 'Track colour' : 'Paint'),
-      swatches(o.color, (c) => { Sim.setColor(park, id, 'color', c); state.dirty = true; refreshPanel(true); }),
+      swatches(o.color, (c) => { act('setColor', id, 'color', c); state.dirty = true; refreshPanel(true); }),
       o.kind === 'custom' && el('h3', {}, 'Train'),
-      o.kind === 'custom' && swatches(o.trainColor, (c) => { Sim.setColor(park, id, 'trainColor', c); state.dirty = true; refreshPanel(true); }),
+      o.kind === 'custom' && swatches(o.trainColor, (c) => { act('setColor', id, 'trainColor', c); state.dirty = true; refreshPanel(true); }),
       o.kind === 'custom' && stepper(`${o.cars || 4} cars · ${4 * (o.cars || 4)} riders`,
-        () => { Sim.setCoasterCars(park, id, (o.cars || 4) - 1); state.dirty = true; refreshPanel(true); },
-        () => { Sim.setCoasterCars(park, id, (o.cars || 4) + 1); state.dirty = true; refreshPanel(true); }),
+        () => { act('setCoasterCars', id, (o.cars || 4) - 1); state.dirty = true; refreshPanel(true); },
+        () => { act('setCoasterCars', id, (o.cars || 4) + 1); state.dirty = true; refreshPanel(true); }),
       o.kind === 'custom' && designView(o._design),
       o.kind === 'custom' && el('div', { class: 'actions' },
         el('button', { class: 'btn btn-small', onclick: () => {
@@ -720,27 +731,26 @@ const PANELS = {
       o.exposed && el('p', { class: 'error small' }, `💊 This vendor has been caught selling drugs under the counter (${o.deals} known deals). Replace them!`),
       !FREE.has(def.sells) && el('h3', {}, 'Price'),
       !FREE.has(def.sells) && stepper(`$${o.price.toFixed(o.price % 1 ? 2 : 0)}`,
-        () => { Sim.setPrice(park, id, o.price - 0.5); state.dirty = true; refreshPanel(true); },
-        () => { Sim.setPrice(park, id, o.price + 0.5); state.dirty = true; refreshPanel(true); }),
+        () => { act('setPrice', id, o.price - 0.5); state.dirty = true; refreshPanel(true); },
+        () => { act('setPrice', id, o.price + 0.5); state.dirty = true; refreshPanel(true); }),
       !FREE.has(def.sells) && el('p', { class: 'small muted' }, ride
         ? `Guests will typically pay up to about ${money(1.5 + ride.excitement * 1.05)}.`
         : 'Guests balk at overpriced food and drinks.'),
       el('div', { class: 'actions' },
-        o.kind !== 'custom' && el('button', { class: 'btn', onclick: () => { Sim.setOpen(park, id, !o.open); state.dirty = true; refreshPanel(true); } }, o.open ? 'Close' : 'Open'),
-        o.kind === 'custom' && el('button', { class: 'btn', onclick: () => { Sim.setOpen(park, id, !o.open); state.dirty = true; refreshPanel(true); } }, o.open ? 'Close' : 'Reopen'),
+        o.kind !== 'custom' && el('button', { class: 'btn', onclick: () => { act('setOpen', id, !o.open); state.dirty = true; refreshPanel(true); } }, o.open ? 'Close' : 'Open'),
+        o.kind === 'custom' && el('button', { class: 'btn', onclick: () => { act('setOpen', id, !o.open); state.dirty = true; refreshPanel(true); } }, o.open ? 'Close' : 'Reopen'),
         o.kind === 'custom' && el('button', {
           class: 'btn',
-          onclick: () => {
-            const res = Sim.editCoaster(park, id);
+          onclick: async () => {
+            const res = await act('editCoaster', id);
             if (!res.ok) { toast(res.reason, 'warn'); return; }
-            state.dirty = true;
             openBuilder(id);
           },
         }, '🛠️ Edit design'),
         'corrupt' in o && el('button', {
           class: `btn${o.exposed ? ' btn-primary' : ''}`,
-          onclick: () => {
-            const res = Sim.replaceVendor(park, id);
+          onclick: async () => {
+            const res = await act('replaceVendor', id);
             toast(res.wasCorrupt ? 'The new vendor is clean. The dealing has stopped.' : 'New vendor hired. (The old one was clean.)');
             state.dirty = true; refreshPanel(true);
           },
@@ -757,9 +767,9 @@ const PANELS = {
       el('p', { class: 'muted small' }, def.camera ? 'Discourages crime nearby and helps identify culprits, who may be stopped at the gate.'
         : def.lamp ? 'Lights the area at dusk, when crime is otherwise more likely.'
         : def.seat ? 'Tired guests sit here to rest.' : def.bin ? 'Guests nearby throw their litter away here.' : 'Pretty scenery makes nearby guests happier.'),
-      nameInput(Sim.objName(o), (v) => { Sim.renameObject(state.park, id, v); refreshPanel(true); }),
+      nameInput(Sim.objName(o), (v) => { act('renameObject', id, v); refreshPanel(true); }),
       o.kind === 'statue' && el('h3', {}, 'Finish'),
-      o.kind === 'statue' && swatches(o.color, (c) => { Sim.setColor(state.park, id, 'color', c); state.dirty = true; refreshPanel(true); }),
+      o.kind === 'statue' && swatches(o.color, (c) => { act('setColor', id, 'color', c); state.dirty = true; refreshPanel(true); }),
       el('div', { class: 'actions' }, el('button', { class: 'btn btn-danger', onclick: () => demolish(o) }, o.paid ? `Remove (+${money(o.paid * 0.5)})` : 'Remove')));
   },
 
@@ -811,7 +821,7 @@ const PANELS = {
     return el('div', {},
       el('h2', {}, s.name),
       el('p', { class: 'muted small' }, `${STAFF[s.role].name} · ${job}`),
-      nameInput(s.name, (v) => { Sim.renameStaff(state.park, id, v); refreshPanel(true); }),
+      nameInput(s.name, (v) => { act('renameStaff', id, v); refreshPanel(true); }),
       s.traits?.length ? el('div', { class: 'traits' }, traitBadges(s.traits)) : el('p', { class: 'small muted' }, 'No special traits.'),
       s.down > 0 && el('p', { class: 'error small' }, `💫 Knocked out: back on duty in ${Math.ceil(s.down)}s`),
       el('div', { class: 'need' }, 'Health', bar((s.hp / s.maxHp) * 100, '#e5484d')),
@@ -820,7 +830,7 @@ const PANELS = {
         Sim.traitMul(s, 'speed') !== 1 && ['Speed', `${Math.round(Sim.traitMul(s, 'speed') * 100)}%`],
         s.role === 'squad' && ['Hot dog accuracy', `${Math.round(s.acc * 100)}%`],
       ]),
-      el('div', { class: 'actions' }, el('button', { class: 'btn btn-danger', onclick: () => { Sim.fire(state.park, id); state.dirty = true; closePanel(); } }, 'Fire')));
+      el('div', { class: 'actions' }, el('button', { class: 'btn btn-danger', onclick: () => { act('fire', id); state.dirty = true; closePanel(); } }, 'Fire')));
   },
 
   securityhq: ({ id }) => {
@@ -850,7 +860,7 @@ const PANELS = {
     const show = rig.show;
     const mode = (m, label) => el('button', {
       class: `btn${rig.pit === m ? ' btn-primary' : ''}`, disabled: !!show,
-      onclick: () => { Sim.setRigMode(park, id, m); state.dirty = true; refreshPanel(true); },
+      onclick: () => { act('setRigMode', id, m); state.dirty = true; refreshPanel(true); },
     }, label);
     return el('div', {},
       el('h2', {}, '⚖️ Retribution Rig'),
@@ -865,8 +875,8 @@ const PANELS = {
       el('div', { class: 'actions' },
         el('button', {
           class: 'btn btn-primary', disabled: !!show || !park.captives.length,
-          onclick: () => {
-            const res = Sim.execute(park, id, rig.pit);
+          onclick: async () => {
+            const res = await act('execute', id, rig.pit);
             if (!res.ok) toast(res.reason, 'warn');
             state.dirty = true;
             refreshPanel(true);
@@ -899,8 +909,8 @@ const PANELS = {
     return el('div', { class: 'rules' },
       el('h2', {}, '⚙️ Rules & settings'),
       el('p', { class: 'small muted' }, 'Change how this park plays. Greyed-out options were fixed when the park was created.'),
-      ...settingGroups((def) => settingControl(def, park.settings[def.key], (v) => {
-        const res = Sim.setSetting(park, def.key, v);
+      ...settingGroups((def) => settingControl(def, park.settings[def.key], async (v) => {
+        const res = await act('setSetting', def.key, v);
         if (!res.ok) toast(res.reason, 'warn');
         state.dirty = true;
         renderPalette();
@@ -926,7 +936,7 @@ const PANELS = {
       el('p', { class: 'small muted' }, 'Each hire may come with random traits, such as Speedy, Tough or Sharpshooter.'),
       el('h3', {}, 'Uniforms'),
       el('div', { class: 'uniforms' }, Object.entries(STAFF).map(([role, def]) => el('label', { class: 'uniform' },
-        el('input', { type: 'color', value: park.uniforms[role] || def.color, onchange: (e) => { Sim.setUniform(park, role, e.target.value); state.dirty = true; } }),
+        el('input', { type: 'color', value: park.uniforms[role] || def.color, onchange: (e) => { act('setUniform', role, e.target.value); state.dirty = true; } }),
         def.name))),
       el('h3', {}, `Employees (${park.staff.length})`),
       park.staff.length
@@ -934,7 +944,7 @@ const PANELS = {
           el('span', {}, s.name, ' ', (s.traits || []).map((t) => STAFF_TRAITS[t].icon).join('')),
           el('span', {},
             el('button', { class: 'btn btn-small', onclick: () => { renderer.centerOn(s.x, s.y); showPanel({ type: 'staff', id: s.id }); } }, 'Find'), ' ',
-            el('button', { class: 'btn btn-small btn-danger', onclick: () => { Sim.fire(park, s.id); state.dirty = true; refreshPanel(true); } }, 'Fire')))))
+            el('button', { class: 'btn btn-small btn-danger', onclick: () => { act('fire', s.id); state.dirty = true; refreshPanel(true); } }, 'Fire')))))
         : el('p', { class: 'small muted' }, 'Nobody yet.'));
   },
 
@@ -949,14 +959,14 @@ const PANELS = {
       el('h3', {}, 'Park name'),
       el('input', {
         class: 'text', value: park.name, maxlength: 40,
-        onchange: (e) => { Sim.renamePark(park, e.target.value); state.dirty = true; e.target.blur(); },
+        onchange: (e) => { act('renamePark', e.target.value); state.dirty = true; e.target.blur(); },
       }),
       el('h3', {}, 'Admission'),
       stepper(money(park.entranceFee),
-        () => { Sim.setEntranceFee(park, park.entranceFee - 1); state.dirty = true; refreshPanel(true); },
-        () => { Sim.setEntranceFee(park, park.entranceFee + 1); state.dirty = true; refreshPanel(true); }),
+        () => { act('setEntranceFee', park.entranceFee - 1); state.dirty = true; refreshPanel(true); },
+        () => { act('setEntranceFee', park.entranceFee + 1); state.dirty = true; refreshPanel(true); }),
       el('div', { class: 'actions' },
-        el('button', { class: 'btn', onclick: () => { Sim.setParkOpen(park, !park.open); state.dirty = true; refreshPanel(true); } }, park.open ? 'Close park to new guests' : 'Open park')),
+        el('button', { class: 'btn', onclick: () => { act('setParkOpen', !park.open); state.dirty = true; refreshPanel(true); } }, park.open ? 'Close park to new guests' : 'Open park')),
       el('h3', {}, 'Overview'),
       kv([
         ['Park value', money(s.value)],
@@ -995,8 +1005,8 @@ const PANELS = {
         : el('div', {},
           el('p', { class: 'small muted' }, 'Ring the park with razor wire so you can lock the exits at any time.'),
           el('div', { class: 'actions' }, el('button', {
-            class: 'btn', onclick: () => {
-              const res = Sim.installFence(park);
+            class: 'btn', onclick: async () => {
+              const res = await act('installFence');
               if (!res.ok) toast(res.reason, 'warn');
               state.dirty = true; refreshPanel(true);
             },
@@ -1049,16 +1059,15 @@ const PANELS = {
   },
 };
 
-function toggleLock() {
-  const res = Sim.setLocked(state.park, !state.park.locked);
+async function toggleLock() {
+  const res = await act('setLocked', !state.park.locked);
   if (!res.ok) toast(res.reason, 'warn');
   state.dirty = true;
   refreshPanel(true);
 }
 
 function demolish(o) {
-  Sim.bulldoze(state.park, o.x, o.y);
-  state.dirty = true;
+  act('bulldoze', o.x, o.y);
   closePanel();
 }
 
@@ -1161,7 +1170,7 @@ async function createFromSetup() {
   const f = setup;
   if (!f.fresh && !confirm('Bulldoze everything and start this new park? Your current park will be lost.')) return;
   if (!f.fresh) await api('/api/park', { method: 'DELETE' }).catch(() => {});
-  state.park = Sim.createPark(f.name.trim() || 'My Park', f.seed, f.settings);
+  await sim.newPark(f.name.trim() || 'My Park', f.seed, f.settings);
   state.dirty = true;
   $('setup-modal').hidden = true;
   closePanel();
@@ -1198,7 +1207,7 @@ async function save({ keepalive = false } = {}) {
   if (state.saving) return;
   state.saving = true;
   try {
-    const data = Sim.serialize(state.park);
+    const data = await sim.serialize();
     // Browsers cap keepalive bodies at 64KB; fall back to a normal request.
     const small = keepalive && JSON.stringify(data).length < 60_000;
     await api('/api/park', { method: 'PUT', body: data, keepalive: small });
@@ -1238,6 +1247,7 @@ function lineTiles(a, b) {
 
 function setSpeed(speed) {
   state.speed = speed;
+  sim.setSpeed(speed);
   for (const b of document.querySelectorAll('.speed button')) b.classList.toggle('active', Number(b.dataset.speed) === speed);
 }
 
@@ -1312,10 +1322,10 @@ function bindInput() {
     else if (k === 'x' && state.tool === 'coaster-start') state.coasterDir = (state.coasterDir + 1) % 4;
     else if (e.key === 'Backspace' && state.builder) {
       e.preventDefault();
-      const res = Sim.removePiece(state.park, state.builder.id);
-      if (res.removed) closePanel();
-      state.dirty = true;
-      refreshPanel(true);
+      act('removePiece', state.builder.id).then((res) => {
+        if (res.removed) closePanel();
+        refreshPanel(true);
+      });
     }
   });
   window.addEventListener('keyup', (e) => keys.delete(e.key));
@@ -1353,6 +1363,6 @@ function bindInput() {
 }
 
 // Handy for debugging from the browser console.
-window.mogul = { state, renderer, Sim };
+window.mogul = { state, renderer, Sim, sim };
 
 boot();

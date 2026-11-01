@@ -5,10 +5,10 @@
 // World space: x = tile x, z = tile y, y = up. One tile is one unit (4 m).
 
 import * as THREE from '/vendor/three/three.module.min.js';
-import { GRID, RIDES, STALLS, STAFF, PANDEMONIUM } from './shared/catalog.js';
-import { TILE, ENTRANCE, idx, actorPos, cellsOf, rideDef, weatherOf } from './shared/sim.js';
-import { CLIMATES, PATH_STYLES } from './shared/options.js';
-import * as Coaster from './shared/coaster.js';
+import { GRID, RIDES, STALLS, STAFF, PANDEMONIUM } from './gen/shared/catalog.js';
+import { TILE, ENTRANCE, idx, actorPos, cellsOf, rideDef, weatherOf } from './gen/shared/sim.js';
+import { CLIMATES, PATH_STYLES } from './gen/shared/options.js';
+import * as Coaster from './gen/shared/coaster.js';
 
 const INSTANCED = new Set(['tree', 'pine', 'flowers', 'palm', 'cactus', 'cherry', 'rock']);
 const SKIN = [0xf4d1b5, 0xe0ac85, 0xc68863, 0x8d5a3b, 0x5c3a24];
