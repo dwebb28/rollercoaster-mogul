@@ -140,6 +140,6 @@ The simulation runs in a **Web Worker**, so heavy sim turns never stall renderin
 
 The page keeps that snapshot as a read-only mirror (`state.park`). Reads such as lookups, stats, placement checks and the coaster builder's piece checks run on the mirror synchronously, using the same `sim.ts` helpers. Every change is a typed message (`act('build', kind, x, y)`, `act('sentence', id, 'fine')`…). The worker applies it from an allow-list of actions, posts the new snapshot, then replies with the result, so the mirror is already up to date when the reply arrives. Saving asks the worker to serialize. `window.mogul.sim` exposes the client for debugging (`sim.batch([...])`, `sim.stats`).
 
-the server parses the park with the same `sim.ts` (`deserialize`), validating and clamping all values, and computes the leaderboard numbers from that parsed state. State-changing requests require a custom header as a CSRF defence.
+On every save, the server parses the park with the same `sim.ts` (`deserialize`), validating and clamping all values, and computes the leaderboard numbers from that parsed state. State-changing requests require a custom header as a CSRF defence.
 
 **Known limitation:** because the sim runs on the client, a determined player could still edit their save before uploading it. A cheat-proof leaderboard would need the server to replay the player's build actions.
