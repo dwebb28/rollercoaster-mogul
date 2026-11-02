@@ -237,3 +237,19 @@ test('WASM scenery beauty matches the TypeScript loop on every tile, after edits
   for (let y = 0; y < 12; y++) for (let x = 0; x < 12; x++) Sim.bulldoze(park, x, y);
   check('after bulldozing');
 });
+
+test('the core object table stays in step through breakdowns, raids, weather and events', async () => {
+  const Sim = await import('../src/shared/sim.ts');
+  const { defaultSettings } = await import('../src/shared/options.ts');
+  Sim.setObjectTableChecks(true); // throws on any stale row at a goal choice
+  try {
+    for (const seed of [2, 3]) {
+      const park = buildStressPark(250, seed);
+      Object.assign(park.settings, defaultSettings('hard'));
+      for (let i = 0; i < 8000; i++) Sim.step(park, 0.1);
+      assert.ok(park.guests.length > 0);
+    }
+  } finally {
+    Sim.setObjectTableChecks(false);
+  }
+});

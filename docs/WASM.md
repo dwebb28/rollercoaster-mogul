@@ -9,6 +9,7 @@ core/                     Rust crate `mogul-core` (no dependencies)
   src/lib.rs              exported ABI: plain extern "C" functions and buffer pointers
   src/path.rs             the tile grid: pathfinding (BFS) and the scenery beauty field
   src/needs.rs            guest needs: hunger, thirst, … happiness drain and the thoughts they trigger
+  src/objects.rs          the object table (rides, shops, scenery as decisions see them) and goal choice
   src/walkers.rs          walkers: positions, routes, movement, route following and wandering
   src/rng.rs              mulberry32, bit-identical to rand() in sim.ts
 public/wasm/
@@ -57,6 +58,12 @@ The rules that keep this fast and safe:
 
 ## Keeping core memory in sync
 
+The object table (`objects.rs`, synced by `syncObjects()` in sim.ts) has one row per object, in `park.objects` order:
+- **When it's rebuilt:** whenever placement changes (`park._objGen`) or another park is simulated.
+- **Fast-changing fields** (open, broken, price, queue length) are rewritten by `touchObject()` right after any change mid-step, and for every object at the start of each step. The step-start pass covers edits made between steps, including direct ones in tests.
+- **Definition fields** (ride or seat, intensity, excitement) are rewritten by `touchObjectDef()` after a definition changes: a rename or a rebuilt coaster.
+- **Adding a new place that changes these fields?** Call the matching touch function. `MOGUL_CHECK_OBJECTS=1 npm test` runs every scenario with a check at each goal choice that the table matches the objects. It throws, naming the object and field, if a touch is missing. A soak test in `tests/core.test.js` does the same through raids, breakdowns, weather and events.
+
 Scenery beauty: `core.beauty` holds the beauty of the scenery on each tile. Every object placement change ends in `refreshAccess()`, which bumps `park._objGen`. `syncBeauty()` then rebuilds the grid only when that number, or the park, changes.
 
 Pathfinding reads tile kinds from `core.tiles`, a mirror of `park.tiles`:
@@ -75,8 +82,9 @@ The order comes from profiling (`npm run bench -- --profile`, 600 guests):
 | 2b | Routes, route following and wandering (`traceRoute`, `advance`) and the RNG | ~3% | **In WASM.** Routes live per walker in the core, wandering draws from the shared RNG stream, and replays are identical. |
 | 3a | Guest needs: decay, happiness drain and need thoughts (`updateGuest`) | ~18% | **In WASM.** Needs live in the core's needs table. |
 | 3b | Scenery beauty around arriving guests (`onArrive`) | ~10% | **In WASM.** A per-tile beauty grid, resynced on object changes. Together with 3a, a step is ~25–35% faster. |
-| 3c | Goal choice: `pickGoal` scoring and `decide` | ~8% | Next. Needs a compact object table (kind, access tiles, price, open) in the core. |
-| 3d | The rest of `updateGuest` (queue, busy and sit states, crime timers) and `parkStats` | ~20% | After 3c. |
+| 3c | Goal choice: `pickGoal`'s scoring loop | ~4% | **In WASM**, on the new object table. Speed is about level: the scoring saving is spent keeping the table current. The table is the foundation for porting rides and shops. |
+| 3d | The rest of `updateGuest` (queue, busy and sit states, crime timers) and `parkStats` | ~22% | Next. `parkStats` (~7%) is a pass over guests and objects that the core can do from its own tables. |
+| 4 | Rides and shops (`updateRide`, `interact`) | ~5% | Uses the object table. Ride queues move into the core, like routes did, which removes most `touchObject` calls. |
 | 4 | Staff and security: `updateStaff`, guard chases, fights | ~3% | After guests. |
 | 5 | Rides, shops and economy | ~3% | Small; port with the guest loop. |
 | 6 | Coaster physics (`coaster.ts`) | builder only | Needs a decision on trigonometry (rule 4). |

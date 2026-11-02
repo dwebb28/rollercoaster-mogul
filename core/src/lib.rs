@@ -10,21 +10,27 @@
 //! `walkers_reserve`, `trace_route` and `route_push` can allocate; it can move the walker table and
 //! grow memory, so JS re-reads `walkers_ptr()` and rebuilds its views after it.
 //!
-//! Migration status: pathfinding, walker movement, routes and guest needs live here. More systems move over one at a
+//! Migration status: pathfinding, walker movement, routes, guest needs,
+//! scenery beauty and goal choice live here. More systems move over one at a
 //! time; see docs/WASM.md.
 
 pub mod needs;
+pub mod objects;
 pub mod path;
 pub mod rng;
 pub mod walkers;
 
 use path::Grid;
 use needs::Needs;
+use objects::Objects;
 use walkers::Walkers;
 
 static mut GRID: Option<Grid> = None;
 static mut WALKERS: Walkers = Walkers { rows: Vec::new(), routes: Vec::new(), has_route: Vec::new() };
 static mut NEEDS: Needs = Needs { rows: Vec::new() };
+static mut OBJECTS: Objects = Objects { rows: Vec::new(), access: Vec::new(), count: 0 };
+/// pick_goal's goal tile, read by JS after a successful call.
+static mut GOAL_OUT: u32 = 0;
 /// RNG hand-off cell: JS writes `park.rngState` here before a call that may
 /// draw random numbers and reads the advanced state back after.
 static mut RNG: u32 = 1;
@@ -44,7 +50,7 @@ fn walkers() -> &'static mut Walkers {
 /// ABI version. Bump when an export's meaning changes; the loader checks it.
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_version() -> u32 {
-    5
+    6
 }
 
 /// Allocates all buffers for a `size × size` map. Call once before anything else.
@@ -104,6 +110,12 @@ pub extern "C" fn walker_step(slot: u32, dt: f64, speed: f64) -> u32 {
 fn needs() -> &'static mut Needs {
     // SAFETY: wasm32-unknown-unknown is single-threaded.
     unsafe { &mut NEEDS }
+}
+
+#[allow(static_mut_refs)]
+fn objects() -> &'static mut Objects {
+    // SAFETY: wasm32-unknown-unknown is single-threaded.
+    unsafe { &mut OBJECTS }
 }
 
 /// Freed walkers carry slot -1 (u32::MAX here); ignore any out-of-range slot.
@@ -208,4 +220,50 @@ pub extern "C" fn beauty_ptr() -> *mut u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn beauty_near(x: i32, y: i32) -> u32 {
     grid().beauty_near(x as i64, y as i64)
+}
+
+/// Makes room for `count` object rows and `access` access tiles. May allocate.
+#[unsafe(no_mangle)]
+pub extern "C" fn objects_reserve(count: u32, access: u32) {
+    objects().reserve(count as usize, access as usize);
+}
+
+/// Sets how many object rows are in use.
+#[unsafe(no_mangle)]
+pub extern "C" fn objects_set_count(count: u32) {
+    objects().count = count as usize;
+}
+
+/// Object rows: `objects::STRIDE` f64 per object (see objects.rs).
+#[unsafe(no_mangle)]
+pub extern "C" fn objects_ptr() -> *mut f64 {
+    objects().rows.as_mut_ptr()
+}
+
+/// Access tiles of all objects, back to back (u16 per tile).
+#[unsafe(no_mangle)]
+pub extern "C" fn object_access_ptr() -> *mut u16 {
+    objects().access.as_mut_ptr()
+}
+
+/// The scoring loop of pickGoal over the last BFS. Draws from the RNG cell.
+/// Returns the chosen object's index, or -1; the goal tile is in goal_out().
+#[unsafe(no_mangle)]
+pub extern "C" fn pick_goal(need: u32, pref: f64, cash: f64) -> i32 {
+    let g = grid();
+    match objects().pick_goal(need, pref, cash, &g.dist, rng_cell()) {
+        Some((i, goal)) => {
+            // SAFETY: single-threaded.
+            unsafe { GOAL_OUT = goal as u32 };
+            i as i32
+        }
+        None => -1,
+    }
+}
+
+/// Goal tile of the last successful pick_goal.
+#[unsafe(no_mangle)]
+pub extern "C" fn goal_out() -> u32 {
+    // SAFETY: single-threaded.
+    unsafe { GOAL_OUT }
 }

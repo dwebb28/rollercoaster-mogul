@@ -18,7 +18,7 @@ let walkerHeap: Float64Array;
 const NEEDS_STRIDE = 8;
 let needsHeap: Float64Array;
 
-const ABI_VERSION = 5;
+const ABI_VERSION = 6;
 
 interface CoreExports {
   memory: WebAssembly.Memory;
@@ -42,6 +42,12 @@ interface CoreExports {
   route_ptr(slot: number): number;
   needs_ptr(): number;
   beauty_ptr(): number;
+  objects_reserve(count: number, access: number): void;
+  objects_set_count(count: number): void;
+  objects_ptr(): number;
+  object_access_ptr(): number;
+  pick_goal(need: number, pref: number, cash: number): number;
+  goal_out(): number;
   beauty_near(x: number, y: number): number;
   guest_needs(slot: number, dt: number, pace: number, typeHunger: number, typeEnergy: number, weatherThirst: number, weatherDrain: number): number;
 }
@@ -53,6 +59,19 @@ export interface Core {
   beauty: Uint8Array;
   /** Total scenery beauty in the 5x5 square around (x, y). */
   beautyNear(x: number, y: number): number;
+  /** Object rows (OBJ.STRIDE f64 per object) and their access tiles; see core/src/objects.rs. */
+  objects: Float64Array;
+  objectAccess: Uint16Array;
+  /** Makes room for `count` objects and `access` access tiles (rebuilds views if needed). */
+  reserveObjects(count: number, access: number): void;
+  setObjectCount(count: number): void;
+  /**
+   * pickGoal's scoring loop over the last bfs(), drawing from `rng`. `need`
+   * is 0 (a ride), OBJ.NEED_SEAT, or a SELLS code. Returns the chosen object
+   * index or -1, with the goal tile in goalOut().
+   */
+  pickGoal(need: number, pref: number, cash: number, rng: { rngState: number }): number;
+  goalOut(): number;
   /** Last BFS result. Overwritten by the next bfs() call: read it, don't keep it. */
   dist: Int16Array;
   prev: Int32Array;
@@ -76,6 +95,13 @@ export interface Core {
   guestNeeds(slot: number, dt: number, pace: number, typeHunger: number, typeEnergy: number,
     weatherThirst: number, weatherDrain: number, rng: { rngState: number }): number;
 }
+
+/** Object table layout (core/src/objects.rs). */
+export const OBJ = {
+  STRIDE: 10, FLAGS: 0, SELLS: 1, INTENSITY: 2, EXCITEMENT: 3, PRICE: 4, QUEUE: 5, ACCESS_START: 6, ACCESS_LEN: 7, RIDDEN: 8,
+  IS_RIDE: 1, SEAT: 2, OPEN: 4, BROKEN: 8, NEED_SEAT: 255,
+} as const;
+let objectCap = 0, accessCap = 0;
 
 /** Thought codes returned by guestNeeds (core/src/needs.rs). */
 export const NEED_THOUGHT = { starving: 1, thirsty: 2, restroom: 3, sick: 4, weather: 5 } as const;
@@ -116,6 +142,8 @@ function views(c: Core) {
   const n = GRID * GRID, buf = X.memory.buffer;
   c.tiles = new Uint8Array(buf, X.tiles_ptr(), n);
   c.beauty = new Uint8Array(buf, X.beauty_ptr(), n);
+  c.objects = new Float64Array(buf, X.objects_ptr(), objectCap * OBJ.STRIDE);
+  c.objectAccess = new Uint16Array(buf, X.object_access_ptr(), accessCap);
   c.dist = new Int16Array(buf, X.dist_ptr(), n);
   c.prev = new Int32Array(buf, X.prev_ptr(), n);
   walkerHeap = new Float64Array(buf, X.walkers_ptr(), walkerCap * WALKER_STRIDE);
@@ -134,6 +162,8 @@ async function load(): Promise<Core> {
   if (X.abi_version() !== ABI_VERSION) throw new Error(`mogul_core.wasm ABI ${X.abi_version()}, expected ${ABI_VERSION}: rebuild it`);
   X.init(GRID);
   X.walkers_reserve(walkerCap);
+  objectCap = 64; accessCap = 256;
+  X.objects_reserve(objectCap, accessCap);
   const c = {
     bfs: (start: number, allowEntrance: boolean) => X.bfs(start, allowEntrance ? 1 : 0),
     walkerStep: (slot: number, dt: number, speed: number) => X.walker_step(slot, dt, speed) === 1,
@@ -150,6 +180,21 @@ async function load(): Promise<Core> {
     },
     routeLen: (slot: number) => X.route_len(slot),
     beautyNear: (x: number, y: number) => X.beauty_near(x, y),
+    reserveObjects(count: number, access: number) {
+      if (count <= objectCap && access <= accessCap) return;
+      objectCap = Math.max(count, objectCap * 2, 64);
+      accessCap = Math.max(access, accessCap * 2, 256);
+      X.objects_reserve(objectCap, accessCap);
+      views(core);
+    },
+    setObjectCount: (count: number) => X.objects_set_count(count),
+    pickGoal(need: number, pref: number, cash: number, rng: { rngState: number }) {
+      rngCell[0] = rng.rngState;
+      const i = X.pick_goal(need, pref, cash);
+      rng.rngState = rngCell[0]!;
+      return i;
+    },
+    goalOut: () => X.goal_out(),
     clearRoute: (slot: number) => X.route_clear(slot),
     rand(rng: { rngState: number }) {
       rngCell[0] = rng.rngState;

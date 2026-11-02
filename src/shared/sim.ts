@@ -7,7 +7,7 @@ import {
   CUSTOM_COASTER, SHOP_VALUE, AGEING, DESIGN_CODE_PREFIX,
 } from './catalog.ts';
 import * as Coaster from './coaster.ts';
-import { core, syncTiles, syncBeauty, setTile, freeWalker, NEED_THOUGHT, THOUGHT_LOGGED } from './core.ts';
+import { core, syncTiles, syncBeauty, setTile, freeWalker, NEED_THOUGHT, THOUGHT_LOGGED, OBJ } from './core.ts';
 import { GuestWalker, StaffWalker } from './walkers.ts';
 import {
   sanitizeSettings, settingDef, CLIMATES, WEATHER, EVENTS, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES,
@@ -667,6 +667,7 @@ function removeObject(park: Park, obj: ParkObject) {
 export function setPrice(park: Park, id: number, price: number) {
   const obj = getObject(park, id);
   if (obj && 'price' in obj) obj.price = clamp(Math.round(price * 2) / 2, 0, 50);
+  touchObject(park, obj);
 }
 
 export function setOpen(park: Park, id: number, open: boolean) {
@@ -675,6 +676,7 @@ export function setOpen(park: Park, id: number, open: boolean) {
   if (open && obj.building) return; // custom coasters open via openCoaster()
   obj.open = open;
   if (!open && isRideObj(obj)) for (const gid of obj.queue.splice(0)) releaseGuest(park, park._guestById.get(gid));
+  touchObject(park, obj);
 }
 
 export function setEntranceFee(park: Park, fee: number) { park.entranceFee = clamp(Math.round(fee), 0, 100); }
@@ -800,13 +802,14 @@ function nearestAccess(obj: ParkObject, dist: Int16Array) {
 
 export function step(park: Park, dt: number) {
   syncTiles(park, true); // tiles may have been edited directly since the last step
+  syncObjects(park, true); // so may objects
   const prevDay = day(park);
   park.time += dt;
 
   spawnGuests(park, dt);
   for (const g of park.guests) updateGuest(park, g, dt);
   for (const obj of park.objects) {
-    if (isRideObj(obj)) updateRide(park, obj, dt);
+    if (isRideObj(obj)) { updateRide(park, obj, dt); touchObject(park, obj); }
     else if (obj.show) updateShow(park, obj, dt);
   }
   for (const s of park.staff) updateStaff(park, s, dt);
@@ -1000,6 +1003,7 @@ function updateGuest(park: Park, g: Guest, dt: number) {
     if (g.queueT > 45) {
       const ride = park.objects.find((o): o is RideObject => isRideObj(o) && o.queue.includes(g.id));
       if (ride) ride.queue.splice(ride.queue.indexOf(g.id), 1);
+      touchObject(park, ride);
       releaseGuest(park, g);
       g.happy -= 8;
       think(park, g, `I've waited too long for ${ride ? rideDef(ride)!.name : 'this ride'}.`);
@@ -1142,6 +1146,107 @@ const NEED_THOUGHTS: Record<string, string> = {
   umbrella: 'I wish I could buy an umbrella.',
 };
 
+// ---------------------------------------------------------------------------
+// Object table in the WASM core (what goal choice needs to know per object)
+// ---------------------------------------------------------------------------
+//
+// Rebuilt when placement changes (park._objGen) or another park is synced.
+// Live fields (open, broken, price, queue length, ride stats) are rewritten
+// by touchObject() wherever they change mid-step, and for every object at the
+// start of each step, which covers edits made between steps.
+
+/** Shop `sells` values as small codes (0 = sells nothing). */
+const SELLS_CODE = new Map<string, number>();
+for (const def of Object.values(STALLS)) if (def.sells && !SELLS_CODE.has(def.sells)) SELLS_CODE.set(def.sells, SELLS_CODE.size + 1);
+
+let objOwner: Park | null = null;
+let objGenSeen = -1;
+/** Object id → row index in the core table, for objOwner. */
+let objIndex = new Map<number, number>();
+// MOGUL_CHECK_OBJECTS=1 npm test runs every scenario with the check on.
+let checkObjectTable = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.MOGUL_CHECK_OBJECTS === '1';
+
+/** Tests: verify the core's object table against the objects at every goal choice. */
+export function setObjectTableChecks(on: boolean) { checkObjectTable = on; }
+
+/** Per-row flags that only change with an object's definition (IS_RIDE, SEAT). */
+let objStatic = new Uint8Array(0);
+
+/** Writes what changes only with an object's definition: ride/seat flags and ride stats. */
+function writeObjectDef(rows: Float64Array, flags: Uint8Array, i: number, obj: ParkObject) {
+  const def = rideDef(obj), r = i * OBJ.STRIDE;
+  flags[i] = (def && isRideObj(obj) ? OBJ.IS_RIDE : 0) | (SCENERY[obj.kind]?.seat ? OBJ.SEAT : 0);
+  rows[r + OBJ.INTENSITY] = def?.intensity ?? 0;
+  rows[r + OBJ.EXCITEMENT] = def?.excitement ?? 0;
+}
+
+/** Writes the fields that change all the time: open, broken, price, queue length. */
+function writeObjectLive(rows: Float64Array, flags: Uint8Array, i: number, obj: ParkObject) {
+  const o = obj as Partial<RideObject> & ParkObject, r = i * OBJ.STRIDE;
+  rows[r + OBJ.FLAGS] = flags[i]! | (o.open ? OBJ.OPEN : 0) | (o.broken ? OBJ.BROKEN : 0);
+  rows[r + OBJ.PRICE] = o.price ?? 0;
+  rows[r + OBJ.QUEUE] = o.queue ? o.queue.length : 0;
+}
+
+/** Makes the core's object table describe `park`. `live` also rewrites every row's live fields. */
+function syncObjects(park: Park, live = false) {
+  if (objOwner === park && objGenSeen === (park._objGen || 0)) {
+    if (live) for (let i = 0; i < park.objects.length; i++) writeObjectLive(core.objects, objStatic, i, park.objects[i]!);
+    return;
+  }
+  let access = 0;
+  for (const obj of park.objects) access += obj._access.length;
+  core.reserveObjects(park.objects.length, access);
+  const rows = core.objects, pool = core.objectAccess;
+  objIndex = new Map();
+  objStatic = new Uint8Array(park.objects.length);
+  let at = 0;
+  park.objects.forEach((obj, i) => {
+    const r = i * OBJ.STRIDE;
+    rows.fill(0, r, r + OBJ.STRIDE);
+    rows[r + OBJ.SELLS] = SELLS_CODE.get(STALLS[obj.kind]?.sells ?? '') ?? 0;
+    rows[r + OBJ.ACCESS_START] = at;
+    rows[r + OBJ.ACCESS_LEN] = obj._access.length;
+    for (const a of obj._access) pool[at++] = a;
+    writeObjectDef(rows, objStatic, i, obj);
+    writeObjectLive(rows, objStatic, i, obj);
+    objIndex.set(obj.id, i);
+  });
+  core.setObjectCount(park.objects.length);
+  objOwner = park;
+  objGenSeen = park._objGen || 0;
+}
+
+/** Call after changing an object's open/broken/price/queue mid-step. */
+function touchObject(park: Park, obj: ParkObject | null | undefined) {
+  if (!obj || objOwner !== park || objGenSeen !== (park._objGen || 0)) return;
+  const i = objIndex.get(obj.id);
+  if (i !== undefined) writeObjectLive(core.objects, objStatic, i, obj);
+}
+
+/** Call after changing an object's definition (`_def`: a rename, a rebuilt coaster). */
+function touchObjectDef(park: Park, obj: ParkObject | null | undefined) {
+  if (!obj || objOwner !== park || objGenSeen !== (park._objGen || 0)) return;
+  const i = objIndex.get(obj.id);
+  if (i === undefined) return;
+  writeObjectDef(core.objects, objStatic, i, obj);
+  writeObjectLive(core.objects, objStatic, i, obj);
+}
+
+function verifyObjectTable(park: Park) {
+  const scratch = new Float64Array(OBJ.STRIDE * park.objects.length);
+  const flags = new Uint8Array(park.objects.length);
+  park.objects.forEach((obj, i) => {
+    writeObjectDef(scratch, flags, i, obj);
+    writeObjectLive(scratch, flags, i, obj);
+    for (const f of [OBJ.FLAGS, OBJ.INTENSITY, OBJ.EXCITEMENT, OBJ.PRICE, OBJ.QUEUE]) {
+      if (scratch[i * OBJ.STRIDE + f] !== core.objects[i * OBJ.STRIDE + f]) {
+        throw new Error(`object table out of date: ${obj.kind} #${obj.id} field ${f} is ${core.objects[i * OBJ.STRIDE + f]}, should be ${scratch[i * OBJ.STRIDE + f]}`);
+      }
+    }
+  });
+}
+
 function pickGoal(park: Park, g: Guest, here: number) {
   if (g.happy < 20) return startLeaving(park, g, "I'm not having fun. I'm going home.");
   if (g.energy < 8) return startLeaving(park, g, "I'm exhausted. Time to go home.");
@@ -1162,24 +1267,18 @@ function pickGoal(park: Park, g: Guest, here: number) {
   else if (g.energy < 35) need = 'seat';
   else if (!g.souvenir && g.happy > 60 && g.cash > 15 && rand(park) < T.souvenir * 0.15) need = 'souvenir';
 
-  const { dist } = bfs(park, here);
-  let best: ParkObject | null = null, bestScore = -Infinity, bestGoal = -1;
-  for (const obj of park.objects) {
-    if (!obj._access.length) continue;
-    let score: number;
-    if (need) {
-      if (need === 'seat' ? !SCENERY[obj.kind]?.seat : STALLS[obj.kind]?.sells !== need || !obj.open) continue;
-      score = 0;
-    } else {
-      const def = rideDef(obj);
-      if (!def || !isRideObj(obj) || !obj.open || obj.broken || def.intensity > g.pref + 2 || obj.price > g.cash) continue;
-      score = def.excitement * 10 - (g.ridden[obj.id] || 0) * 18 - obj.queue.length * 1.5 + rand(park) * 12;
-    }
-    const goal = nearestAccess(obj, dist);
-    if (goal === null) continue;
-    score -= dist[goal] * (need ? 1 : 0.6);
-    if (score > bestScore) { bestScore = score; best = obj; bestGoal = goal; }
-  }
+  // Scoring every candidate runs in the WASM core (core/src/objects.rs).
+  bfs(park, here);
+  syncObjects(park);
+  const needCode = !need ? 0 : need === 'seat' ? OBJ.NEED_SEAT : SELLS_CODE.get(need) ?? 0xfe;
+  const rows = core.objects;
+  const ridden = Object.keys(g.ridden);
+  for (const id of ridden) { const i = objIndex.get(Number(id)); if (i !== undefined) rows[i * OBJ.STRIDE + OBJ.RIDDEN] = g.ridden[Number(id)] || 0; }
+  const pickedIndex = core.pickGoal(needCode, g.pref, g.cash, park);
+  for (const id of ridden) { const i = objIndex.get(Number(id)); if (i !== undefined) rows[i * OBJ.STRIDE + OBJ.RIDDEN] = 0; }
+  if (checkObjectTable) verifyObjectTable(park);
+  const best = pickedIndex >= 0 ? park.objects[pickedIndex]! : null;
+  const bestGoal = pickedIndex >= 0 ? core.goalOut() : -1;
 
   if (!best && need === 'firstaid') return startLeaving(park, g, "I'm hurt. I need to get out of here.");
   if (!best) {
@@ -1215,6 +1314,7 @@ function interact(park: Park, g: Guest, obj: ParkObject, here: number) {
     if (obj.price) earn(park, obj.price, 'rides');
     obj.stats.revenue += obj.price;
     obj.queue.push(g.id);
+    touchObject(park, obj);
     g.state = 'queue';
     g.queueT = 0;
     g.queueAt = here;
@@ -1391,6 +1491,7 @@ function finishStaffJob(park: Park, s: Staff) {
     const ride = getObject(park, job);
     if (ride?.broken) {
       ride.broken = false;
+      touchObject(park, ride);
       park._events.push({ type: 'info', text: `${objName(ride)} has been repaired.` });
     }
     s.task = null;
@@ -1588,7 +1689,7 @@ function afterCrime(park: Park, g: Guest, cov: Coverage, flee: boolean) {
 
 function arrest(park: Park, g: Guest, by: string) {
   for (const o of park.objects) {
-    if (isRideObj(o) && o.queue.includes(g.id)) o.queue.splice(o.queue.indexOf(g.id), 1);
+    if (isRideObj(o) && o.queue.includes(g.id)) { o.queue.splice(o.queue.indexOf(g.id), 1); touchObject(park, o); }
   }
   g.gone = true;
   g.arrested = true;
@@ -1773,6 +1874,7 @@ function robTill(park: Park, g: Guest, obj: ParkObject) {
   if (smashed) {
     obj.broken = true;
     if (isRideObj(obj)) for (const gid of obj.queue.splice(0)) releaseGuest(park, park._guestById.get(gid));
+    touchObject(park, obj);
   }
   logIncident(park, 'heist', `Pandemonium hit ${objName(obj)}: $${taken.toLocaleString()} stolen${smashed ? ' and the place was smashed up' : ''}.`);
   park._events.push({ type: 'warn', text: `🐼 ${g.name} robbed ${objName(obj)}${taken ? ` of $${taken.toLocaleString()}` : ''}${smashed ? ' and smashed it' : ''}!` });
@@ -2209,6 +2311,7 @@ function refreshCoaster(obj: CoasterObject) {
   obj._design = Coaster.isComplete(start, obj.track.pieces) ? Coaster.simulate(start, obj.track.pieces) : null;
   obj._def = defFromDesign(obj);
   if (obj._design && !obj._design.ok && !obj.building) { obj.building = true; obj.open = false; }
+  // Callers with a park follow this with refreshAccess() or touchObject().
 }
 
 function defFromDesign(obj: CoasterObject): RideDef {
@@ -2246,6 +2349,7 @@ export function startCoaster(park: Park, x: number, y: number, dir: number): Res
   park.objects.push(obj);
   park._byId.set(obj.id, obj);
   refreshCoaster(obj);
+  touchObjectDef(park, obj);
   park._objAt[i] = obj.id;
   refreshAccess(park);
   return { ok: true, obj };
@@ -2292,6 +2396,7 @@ export function canAddPiece(park: Park, obj: CoasterObject | null, type: string)
 function reindexCoaster(park: Park, obj: CoasterObject) {
   for (const [x, y] of obj._cells || []) if (park._objAt[idx(x, y)] === obj.id) park._objAt[idx(x, y)] = 0;
   refreshCoaster(obj);
+  touchObjectDef(park, obj);
   for (const [x, y] of obj._cells || []) park._objAt[idx(x, y)] = obj.id;
   refreshAccess(park);
 }
@@ -2337,6 +2442,7 @@ export function testCoaster(park: Park, id: number): CoasterDesign {
     return { ok: false, reason: `The track must return to the station. It ends ${describeGap(obj, c)}.` };
   }
   refreshCoaster(obj);
+  touchObjectDef(park, obj);
   return obj._design!;
 }
 
@@ -2357,6 +2463,7 @@ export function openCoaster(park: Park, id: number): CoasterDesign {
   obj.building = false;
   obj.open = true;
   obj._def = defFromDesign(obj);
+  touchObjectDef(park, obj);
   if (!obj.price) obj.price = Math.max(1, Math.round(1 + res.excitement * 0.9));
   park._events.push({ type: 'goal', text: `${obj.name} is open! Top speed ${res.maxSpeed} km/h.` });
   return res;
@@ -2376,6 +2483,7 @@ export function renameRide(park: Park, id: number, name: string) {
   if (!obj) return;
   obj.name = String(name).trim().slice(0, 40) || obj.name;
   obj._def = defFromDesign(obj);
+  touchObjectDef(park, obj);
 }
 
 // ---------------------------------------------------------------------------
@@ -2409,6 +2517,7 @@ function maybeChangeWeather(park: Park) {
       const hit = pick(park, tall);
       if (!hit.broken) {
         hit.broken = true;
+        touchObject(park, hit);
         park._events.push({ type: 'warn', text: `⚡ Lightning struck ${objName(hit)}! It needs repairs.` });
       }
     }
@@ -2590,6 +2699,7 @@ export function refurbish(park: Park, id: number) {
   spend(park, cost, 'upkeep');
   obj.builtDay = day(park);
   obj.broken = false;
+  touchObject(park, obj);
   return { ok: true, cost };
 }
 
@@ -2613,6 +2723,7 @@ export function renameObject(park: Park, id: number, name: string) {
   const clean = String(name).trim().slice(0, 40);
   if (clean) obj.name = clean; else delete obj.name;
   if (RIDES[obj.kind]) obj._def = obj.name ? { ...RIDES[obj.kind], name: obj.name } : undefined;
+  touchObjectDef(park, obj);
 }
 
 export function renameStaff(park: Park, id: number, name: string) {
@@ -2636,6 +2747,7 @@ export function setCoasterCars(park: Park, id: number, cars: number) {
   if (!obj) return;
   obj.cars = clamp(Math.round(cars), 2, 7);
   obj._def = defFromDesign(obj);
+  touchObjectDef(park, obj);
 }
 
 export function setUniform(park: Park, role: StaffRole, color: string | null) {
@@ -2719,6 +2831,7 @@ export function importDesign(park: Park, x: number, y: number, dir: number, code
   if (design.color) obj.color = design.color;
   if (design.trainColor) obj.trainColor = design.trainColor;
   obj._def = defFromDesign(obj);
+  touchObjectDef(park, obj);
   return { ok: true, obj };
 }
 
