@@ -7,6 +7,8 @@ pub const ENTRANCE: u8 = 2;
 pub struct Grid {
     pub size: usize,
     pub tiles: Vec<u8>,
+    /// Beauty of the scenery standing on each tile (0 for none), synced by JS.
+    pub beauty: Vec<u8>,
     pub dist: Vec<i16>,
     pub prev: Vec<i32>,
     queue: Vec<u32>,
@@ -15,7 +17,22 @@ pub struct Grid {
 impl Grid {
     pub fn new(size: usize) -> Self {
         let n = size * size;
-        Grid { size, tiles: vec![GRASS; n], dist: vec![-1; n], prev: vec![-1; n], queue: vec![0; n] }
+        Grid { size, tiles: vec![GRASS; n], beauty: vec![0; n], dist: vec![-1; n], prev: vec![-1; n], queue: vec![0; n] }
+    }
+
+    /// Total scenery beauty in the 5x5 square around (x, y): the former
+    /// TypeScript loop in onArrive. Whole numbers, so summation order is moot.
+    pub fn beauty_near(&self, x: i64, y: i64) -> u32 {
+        let size = self.size as i64;
+        let mut sum = 0u32;
+        for yy in (y - 2)..=(y + 2) {
+            for xx in (x - 2)..=(x + 2) {
+                if xx >= 0 && yy >= 0 && xx < size && yy < size {
+                    sum += self.beauty[(yy * size + xx) as usize] as u32;
+                }
+            }
+        }
+        sum
     }
 
     /// Same visiting order as the original TypeScript (+x, -x, +y, -y), so
@@ -73,6 +90,17 @@ mod tests {
         assert_eq!(g.bfs(0, true), 4);
         assert_eq!(g.dist[3], 3);
         assert_eq!(g.prev[3], 2);
+    }
+
+    #[test]
+    fn beauty_sums_the_5x5_square_and_clips_at_edges() {
+        let mut g = Grid::new(6);
+        g.beauty[0] = 3; // (0,0)
+        g.beauty[2 * 6 + 2] = 10; // (2,2)
+        g.beauty[5 * 6 + 5] = 7; // (5,5): outside the square around (1,1)
+        assert_eq!(g.beauty_near(1, 1), 13);
+        assert_eq!(g.beauty_near(4, 4), 17);
+        assert_eq!(g.beauty_near(0, 5), 0);
     }
 
     #[test]

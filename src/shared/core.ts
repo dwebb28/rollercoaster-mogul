@@ -14,8 +14,11 @@ import { GRID } from './catalog.ts';
 const WALKER_STRIDE = 8;
 let walkerCap = 1024;
 let walkerHeap: Float64Array;
+/** Guest needs row: happy, hunger, thirst, bladder, energy, nausea, thoughtT, timeIn (core/src/needs.rs). */
+const NEEDS_STRIDE = 8;
+let needsHeap: Float64Array;
 
-const ABI_VERSION = 3;
+const ABI_VERSION = 5;
 
 interface CoreExports {
   memory: WebAssembly.Memory;
@@ -37,11 +40,19 @@ interface CoreExports {
   route_begin(slot: number): void;
   route_push(slot: number, tile: number): void;
   route_ptr(slot: number): number;
+  needs_ptr(): number;
+  beauty_ptr(): number;
+  beauty_near(x: number, y: number): number;
+  guest_needs(slot: number, dt: number, pace: number, typeHunger: number, typeEnergy: number, weatherThirst: number, weatherDrain: number): number;
 }
 
 export interface Core {
   /** Tile kinds mirrored from park.tiles (0 grass, 1 path, 2 entrance). */
   tiles: Uint8Array;
+  /** Beauty of the scenery on each tile, mirrored from the park's objects. */
+  beauty: Uint8Array;
+  /** Total scenery beauty in the 5x5 square around (x, y). */
+  beautyNear(x: number, y: number): number;
   /** Last BFS result. Overwritten by the next bfs() call: read it, don't keep it. */
   dist: Int16Array;
   prev: Int32Array;
@@ -57,7 +68,18 @@ export interface Core {
   clearRoute(slot: number): void;
   /** One mulberry32 draw from `rng` (parity tests). */
   rand(rng: { rngState: number }): number;
+  /**
+   * One needs tick for guest `slot` (hunger, thirst, … and happiness), drawing
+   * from `rng`. Returns a NEED_THOUGHT code, plus THOUGHT_LOGGED when the
+   * thought also goes in the park log; 0 when the guest had no new thought.
+   */
+  guestNeeds(slot: number, dt: number, pace: number, typeHunger: number, typeEnergy: number,
+    weatherThirst: number, weatherDrain: number, rng: { rngState: number }): number;
 }
+
+/** Thought codes returned by guestNeeds (core/src/needs.rs). */
+export const NEED_THOUGHT = { starving: 1, thirsty: 2, restroom: 3, sick: 4, weather: 5 } as const;
+export const THOUGHT_LOGGED = 0x100;
 
 async function wasmBytes(): Promise<BufferSource | Response> {
   if (import.meta.url.startsWith('file:')) {
@@ -93,10 +115,12 @@ let viewBuffer: ArrayBuffer | null = null;
 function views(c: Core) {
   const n = GRID * GRID, buf = X.memory.buffer;
   c.tiles = new Uint8Array(buf, X.tiles_ptr(), n);
+  c.beauty = new Uint8Array(buf, X.beauty_ptr(), n);
   c.dist = new Int16Array(buf, X.dist_ptr(), n);
   c.prev = new Int32Array(buf, X.prev_ptr(), n);
   walkerHeap = new Float64Array(buf, X.walkers_ptr(), walkerCap * WALKER_STRIDE);
   rngCell = new Uint32Array(buf, X.rng_ptr(), 1);
+  needsHeap = new Float64Array(buf, X.needs_ptr(), walkerCap * NEEDS_STRIDE);
   viewBuffer = buf;
 }
 
@@ -125,12 +149,19 @@ async function load(): Promise<Core> {
       return ok;
     },
     routeLen: (slot: number) => X.route_len(slot),
+    beautyNear: (x: number, y: number) => X.beauty_near(x, y),
     clearRoute: (slot: number) => X.route_clear(slot),
     rand(rng: { rngState: number }) {
       rngCell[0] = rng.rngState;
       const r = X.rng_next();
       rng.rngState = rngCell[0]!;
       return r;
+    },
+    guestNeeds(slot, dt, pace, typeHunger, typeEnergy, weatherThirst, weatherDrain, rng) {
+      rngCell[0] = rng.rngState;
+      const said = X.guest_needs(slot, dt, pace, typeHunger, typeEnergy, weatherThirst, weatherDrain);
+      rng.rngState = rngCell[0]!;
+      return said;
     },
   } as Core;
   views(c);
@@ -147,6 +178,21 @@ export function syncTiles(park: { tiles: ArrayLike<number> }, force = false) {
   if (!force && owner === park) return;
   core.tiles.set(park.tiles);
   owner = park;
+}
+
+let beautyOwner: object | null = null;
+let beautyGen = -1;
+
+/**
+ * Makes the core's beauty grid match `park` when it holds another park's, or
+ * objects have changed since (`gen` is bumped on every placement change).
+ * `beautyAt(i)` gives the beauty of the scenery on tile i.
+ */
+export function syncBeauty(park: object, gen: number, beautyAt: (i: number) => number) {
+  if (beautyOwner === park && beautyGen === gen) return;
+  for (let i = 0; i < core.beauty.length; i++) core.beauty[i] = beautyAt(i);
+  beautyOwner = park;
+  beautyGen = gen;
 }
 
 /** Records a single tile change (keeps the core in step without a full copy). */
@@ -243,14 +289,53 @@ export class CoreWalker {
     afterAlloc();
   }
 
+  /** Adds core-backed fields beyond positions to a plain copy (see CoreGuest). */
+  _plainExtra(_c: Record<string, unknown>) {}
+
   toJSON() { return plainWalker(this); }
+}
+
+/**
+ * A guest: a walker whose needs (happy, hunger, thirst, bladder, energy,
+ * nausea, thoughtT, timeIn) also live in core memory, in the needs table.
+ */
+export class CoreGuest extends CoreWalker {
+  constructor(f: WalkerInit) {
+    super(f);
+    const r = this._w * NEEDS_STRIDE;
+    needsHeap.fill(0, r, r + NEEDS_STRIDE); // the subclass assigns real values
+  }
+
+  get happy() { return needsHeap[this._w * NEEDS_STRIDE]!; }
+  set happy(v: number) { needsHeap[this._w * NEEDS_STRIDE] = v; }
+  get hunger() { return needsHeap[this._w * NEEDS_STRIDE + 1]!; }
+  set hunger(v: number) { needsHeap[this._w * NEEDS_STRIDE + 1] = v; }
+  get thirst() { return needsHeap[this._w * NEEDS_STRIDE + 2]!; }
+  set thirst(v: number) { needsHeap[this._w * NEEDS_STRIDE + 2] = v; }
+  get bladder() { return needsHeap[this._w * NEEDS_STRIDE + 3]!; }
+  set bladder(v: number) { needsHeap[this._w * NEEDS_STRIDE + 3] = v; }
+  get energy() { return needsHeap[this._w * NEEDS_STRIDE + 4]!; }
+  set energy(v: number) { needsHeap[this._w * NEEDS_STRIDE + 4] = v; }
+  get nausea() { return needsHeap[this._w * NEEDS_STRIDE + 5]!; }
+  set nausea(v: number) { needsHeap[this._w * NEEDS_STRIDE + 5] = v; }
+  get thoughtT() { return needsHeap[this._w * NEEDS_STRIDE + 6]!; }
+  set thoughtT(v: number) { needsHeap[this._w * NEEDS_STRIDE + 6] = v; }
+  get timeIn() { return needsHeap[this._w * NEEDS_STRIDE + 7]!; }
+  set timeIn(v: number) { needsHeap[this._w * NEEDS_STRIDE + 7] = v; }
+
+  override _plainExtra(c: Record<string, unknown>) {
+    c.happy = this.happy; c.hunger = this.hunger; c.thirst = this.thirst; c.bladder = this.bladder;
+    c.energy = this.energy; c.nausea = this.nausea; c.thoughtT = this.thoughtT; c.timeIn = this.timeIn;
+  }
 }
 
 /** A plain-object copy of a walker, positions included and slot blanked. */
 export function plainWalker<T extends object>(w: T): T {
   if (!(w instanceof CoreWalker)) return { ...w };
   // Spread-then-override measured ~2x faster than rest-destructuring.
-  return { ...w, _w: undefined, x: w.x, y: w.y, nx: w.nx, ny: w.ny, lx: w.lx, ly: w.ly, t: w.t };
+  const c = { ...w, _w: undefined, x: w.x, y: w.y, nx: w.nx, ny: w.ny, lx: w.lx, ly: w.ly, t: w.t };
+  w._plainExtra(c as Record<string, unknown>);
+  return c;
 }
 
 /** Returns a walker's slot to the pool. Call when it leaves the park. */

@@ -7,7 +7,8 @@ The simulation is moving from TypeScript to Rust, compiled to WebAssembly. The m
 ```
 core/                     Rust crate `mogul-core` (no dependencies)
   src/lib.rs              exported ABI: plain extern "C" functions and buffer pointers
-  src/path.rs             pathfinding (BFS over the path grid)
+  src/path.rs             the tile grid: pathfinding (BFS) and the scenery beauty field
+  src/needs.rs            guest needs: hunger, thirst, … happiness drain and the thoughts they trigger
   src/walkers.rs          walkers: positions, routes, movement, route following and wandering
   src/rng.rs              mulberry32, bit-identical to rand() in sim.ts
 public/wasm/
@@ -44,16 +45,19 @@ You only need Rust installed to change the core. `npm start` and `npm test` use 
 
 ## Walkers: state that lives in the core
 
-Guests and staff are `GuestWalker` / `StaffWalker` instances (`walkers.ts`). Their `x, y, nx, ny, lx, ly, t` and `route` are getters and setters on the `CoreWalker` prototype. They read and write the walker's row in the core's table (`walkers.rs`, 8 f64 per slot). Everything else is an ordinary field. To the other ~200 places that use positions, a walker looks like a plain object, and movement (`walker_step`) runs in Rust on the same memory with no copying.
+Guests and staff are `GuestWalker` / `StaffWalker` instances (`walkers.ts`). Their `x, y, nx, ny, lx, ly, t` and `route` are getters and setters on the `CoreWalker` prototype. For guests, `happy, hunger, thirst, bladder, energy, nausea, thoughtT, timeIn` are getters and setters on `CoreGuest`, backed by the needs table (`needs.rs`). They read and write the walker's row in the core's table (`walkers.rs`, 8 f64 per slot). Everything else is an ordinary field. To the other ~200 places that use positions, a walker looks like a plain object, and movement (`walker_step`) runs in Rust on the same memory with no copying.
 
 The rules that keep this fast and safe:
 - **Routes never become JS arrays.** `traceRoute(walker, start, goal)` builds the route in the core from the last `bfs()`, and `advance()` follows it there. Simulation code uses `hasRoute`, `routeLeft` and `clearRoute`. A route can be absent or present-but-empty (JS `null` vs `[]`), and the simulation treats those differently, so the core tracks both. The `route` accessor copies the route in or out as an array, for tests and debugging only.
 - **Create walkers only with `new GuestWalker(...)` / `new StaffWalker(...)`.** `moveActor` throws for anything else.
 - **Declare every field in the class.** `implements Guest` makes the compiler enforce it. All walkers then share one V8 object shape. Two shortcuts were measured and rejected: per-object accessors were 2× slower, and swapping an object literal's prototype was 10× slower. Copying fields one at a time onto a fresh object also pushed V8 into dictionary mode.
-- **Copy with `plainWalker()`, not spread.** Spread and `structuredClone` copy own properties only, so positions would be missing. `JSON.stringify` uses `toJSON()`, so saves need nothing special.
+- **Strings stay in JS.** A core function that would say something returns a code, such as a `NEED_THOUGHT` value plus `THOUGHT_LOGGED`. JS maps the code to text. The core still does all the bookkeeping that affects the simulation, like `thoughtT` and the RNG draw for the log, so the random stream stays in order.
+- **Copy with `plainWalker()`, not spread.** It also copies core-backed fields beyond positions (`_plainExtra`). Spread and `structuredClone` copy own properties only, so positions would be missing. `JSON.stringify` uses `toJSON()`, so saves need nothing special.
 - **Free slots with `freeWalker()`** when a walker leaves: departed guests, fired or killed staff, or pandas dropped on load. A `FinalizationRegistry` reclaims slots of walkers dropped any other way, such as a whole park being replaced. A freed walker reads `undefined` and its writes go nowhere, so a stale reference can't corrupt a reused slot.
 
 ## Keeping core memory in sync
+
+Scenery beauty: `core.beauty` holds the beauty of the scenery on each tile. Every object placement change ends in `refreshAccess()`, which bumps `park._objGen`. `syncBeauty()` then rebuilds the grid only when that number, or the park, changes.
 
 Pathfinding reads tile kinds from `core.tiles`, a mirror of `park.tiles`:
 - `syncTiles(park, true)` runs at the start of every `step()`.
@@ -69,7 +73,10 @@ The order comes from profiling (`npm run bench -- --profile`, 600 guests):
 | 1 | Pathfinding (`bfs`) | 29% | **In WASM.** Its share is now ~12%; a step is 20–35% faster. |
 | 2 | Walker positions and movement (`moveActor`) | ~5% | **In WASM.** Positions are owned by the core. Speed is level with TypeScript, and replays are identical. |
 | 2b | Routes, route following and wandering (`traceRoute`, `advance`) and the RNG | ~3% | **In WASM.** Routes live per walker in the core, wandering draws from the shared RNG stream, and replays are identical. |
-| 3 | Guest update loop: `updateGuest`, `onArrive`, `decide`, `pickGoal` | ~35% | Next. Extend the walker table with needs (hunger, thirst, …) the same way as positions, then port the loop. Thoughts (strings) stay in JS, reported back as event codes. |
+| 3a | Guest needs: decay, happiness drain and need thoughts (`updateGuest`) | ~18% | **In WASM.** Needs live in the core's needs table. |
+| 3b | Scenery beauty around arriving guests (`onArrive`) | ~10% | **In WASM.** A per-tile beauty grid, resynced on object changes. Together with 3a, a step is ~25–35% faster. |
+| 3c | Goal choice: `pickGoal` scoring and `decide` | ~8% | Next. Needs a compact object table (kind, access tiles, price, open) in the core. |
+| 3d | The rest of `updateGuest` (queue, busy and sit states, crime timers) and `parkStats` | ~20% | After 3c. |
 | 4 | Staff and security: `updateStaff`, guard chases, fights | ~3% | After guests. |
 | 5 | Rides, shops and economy | ~3% | Small; port with the guest loop. |
 | 6 | Coaster physics (`coaster.ts`) | builder only | Needs a decision on trigonometry (rule 4). |

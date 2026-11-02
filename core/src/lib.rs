@@ -10,18 +10,21 @@
 //! `walkers_reserve`, `trace_route` and `route_push` can allocate; it can move the walker table and
 //! grow memory, so JS re-reads `walkers_ptr()` and rebuilds its views after it.
 //!
-//! Migration status: pathfinding, walker movement and routes live here. More systems move over one at a
+//! Migration status: pathfinding, walker movement, routes and guest needs live here. More systems move over one at a
 //! time; see docs/WASM.md.
 
+pub mod needs;
 pub mod path;
 pub mod rng;
 pub mod walkers;
 
 use path::Grid;
+use needs::Needs;
 use walkers::Walkers;
 
 static mut GRID: Option<Grid> = None;
 static mut WALKERS: Walkers = Walkers { rows: Vec::new(), routes: Vec::new(), has_route: Vec::new() };
+static mut NEEDS: Needs = Needs { rows: Vec::new() };
 /// RNG hand-off cell: JS writes `park.rngState` here before a call that may
 /// draw random numbers and reads the advanced state back after.
 static mut RNG: u32 = 1;
@@ -41,7 +44,7 @@ fn walkers() -> &'static mut Walkers {
 /// ABI version. Bump when an export's meaning changes; the loader checks it.
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_version() -> u32 {
-    3
+    5
 }
 
 /// Allocates all buffers for a `size × size` map. Call once before anything else.
@@ -79,6 +82,7 @@ pub extern "C" fn bfs(start: u32, allow_entrance: u32) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn walkers_reserve(slots: u32) {
     walkers().reserve(slots as usize);
+    needs().reserve(slots as usize);
 }
 
 /// Walker table: `walkers::STRIDE` f64 per slot (x, y, nx, ny, lx, ly, t, spare).
@@ -94,6 +98,12 @@ pub extern "C" fn walker_step(slot: u32, dt: f64, speed: f64) -> u32 {
     if !live(slot) { return 1; }
     let g = grid();
     walkers().step(slot as usize, dt, speed, &g.tiles, g.size) as u32
+}
+
+#[allow(static_mut_refs)]
+fn needs() -> &'static mut Needs {
+    // SAFETY: wasm32-unknown-unknown is single-threaded.
+    unsafe { &mut NEEDS }
 }
 
 /// Freed walkers carry slot -1 (u32::MAX here); ignore any out-of-range slot.
@@ -171,4 +181,31 @@ pub extern "C" fn route_push(slot: u32, tile: u32) {
 pub extern "C" fn route_ptr(slot: u32) -> *const u16 {
     if !live(slot) { return core::ptr::null(); }
     walkers().routes[slot as usize].as_ptr()
+}
+
+/// Guest needs table: `needs::STRIDE` f64 per slot (see needs.rs).
+#[unsafe(no_mangle)]
+pub extern "C" fn needs_ptr() -> *mut f64 {
+    needs().rows.as_mut_ptr()
+}
+
+/// One needs tick for guest `slot`. Draws from the RNG cell. Returns the
+/// thought code (0 for none), with 0x100 set if it goes in the park log.
+#[unsafe(no_mangle)]
+pub extern "C" fn guest_needs(slot: u32, dt: f64, pace: f64, type_hunger: f64, type_energy: f64, weather_thirst: f64, weather_drain: f64) -> u32 {
+    if !live(slot) { return 0; }
+    let k = needs::Tick { dt, pace, type_hunger, type_energy, weather_thirst, weather_drain };
+    needs().tick(slot as usize, &k, rng_cell())
+}
+
+/// Per-tile scenery beauty (u8 per tile), written by JS when objects change.
+#[unsafe(no_mangle)]
+pub extern "C" fn beauty_ptr() -> *mut u8 {
+    grid().beauty.as_mut_ptr()
+}
+
+/// Total scenery beauty in the 5x5 square around (x, y).
+#[unsafe(no_mangle)]
+pub extern "C" fn beauty_near(x: i32, y: i32) -> u32 {
+    grid().beauty_near(x as i64, y as i64)
 }

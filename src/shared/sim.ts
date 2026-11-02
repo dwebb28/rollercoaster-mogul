@@ -7,7 +7,7 @@ import {
   CUSTOM_COASTER, SHOP_VALUE, AGEING, DESIGN_CODE_PREFIX,
 } from './catalog.ts';
 import * as Coaster from './coaster.ts';
-import { core, syncTiles, setTile, freeWalker } from './core.ts';
+import { core, syncTiles, syncBeauty, setTile, freeWalker, NEED_THOUGHT, THOUGHT_LOGGED } from './core.ts';
 import { GuestWalker, StaffWalker } from './walkers.ts';
 import {
   sanitizeSettings, settingDef, CLIMATES, WEATHER, EVENTS, GUEST_TYPES, STAFF_TRAITS, PATH_STYLES,
@@ -208,6 +208,7 @@ function rebuildIndex(park: Park) {
 
 /** Recomputes which path tiles touch each object. */
 function refreshAccess(park: Park) {
+  park._objGen = (park._objGen || 0) + 1; // every placement change ends here: the core resyncs beauty
   for (const obj of park.objects) {
     if (obj.kind === 'custom') {
       // Guests board at the station only.
@@ -921,10 +922,13 @@ function think(park: Park, g: Guest, text: string, force = false) {
   if (g.thoughtT > 0 && !force) return;
   g.thought = text;
   g.thoughtT = 12;
-  if (rand(park) < 0.3 || force) {
-    park.thoughts.unshift({ text, who: g.name, day: day(park) });
-    if (park.thoughts.length > 25) park.thoughts.length = 25;
-  }
+  if (rand(park) < 0.3 || force) logThought(park, g, text);
+}
+
+/** Adds a thought to the park's recent-thoughts log. */
+function logThought(park: Park, g: Guest, text: string) {
+  park.thoughts.unshift({ text, who: g.name, day: day(park) });
+  if (park.thoughts.length > 25) park.thoughts.length = 25;
 }
 
 function startLeaving(park: Park, g: Guest, reason?: string) {
@@ -950,27 +954,23 @@ function releaseGuest(park: Park, g: Guest | undefined) {
 
 function updateGuest(park: Park, g: Guest, dt: number) {
   if (g.crime === 'panda') return updatePanda(park, g, dt);
-  g.timeIn += dt;
-  g.thoughtT -= dt;
+  // Needs, happiness drain and the thoughts they cause run in the WASM core
+  // (core/src/needs.rs), drawing from the park's RNG stream in the same order.
   const pace = g.state === 'ride' ? 0.3 : 1;
   const T = guestType(g), W = weatherOf(park);
-  g.hunger = Math.min(100, g.hunger + 0.42 * T.hunger * dt * pace);
-  g.thirst = Math.min(100, g.thirst + 0.5 * W.thirst * dt * pace);
-  g.bladder = Math.min(100, g.bladder + 0.28 * dt * pace);
-  g.energy = Math.max(0, g.energy - 0.18 * T.energy * dt * pace);
-  g.nausea = Math.max(0, g.nausea - 1.2 * dt);
-
-  let drain = 0;
-  if (g.hunger > 85) { drain += 0.5; if (rand(park) < 0.02) think(park, g, "I'm starving!"); }
-  if (g.thirst > 85) { drain += 0.5; if (rand(park) < 0.02) think(park, g, "I'm so thirsty."); }
-  if (g.bladder > 90) { drain += 0.8; if (rand(park) < 0.02) think(park, g, 'I really need a restroom!'); }
-  if (g.nausea > 60) { drain += 0.4; if (rand(park) < 0.02) think(park, g, 'I feel sick...'); }
-  if (g.energy < 20) drain += 0.2;
-  if (W.happyDrain && !(W.umbrella && g.umbrella) && g.state === 'walk') {
-    drain += W.happyDrain;
-    if (rand(park) < 0.004) think(park, g, W.precip === 'snow' ? "I'm freezing out here." : W.precip ? "I'm getting soaked!" : 'This heat is unbearable.');
+  const weatherDrain = W.happyDrain && !(W.umbrella && g.umbrella) && g.state === 'walk' ? W.happyDrain : 0;
+  const said = core.guestNeeds(g._w!, dt, pace, T.hunger, T.energy, W.thirst, weatherDrain, park);
+  if (said) {
+    const code = said & 0xff;
+    const text = code === NEED_THOUGHT.starving ? "I'm starving!"
+      : code === NEED_THOUGHT.thirsty ? "I'm so thirsty."
+      : code === NEED_THOUGHT.restroom ? 'I really need a restroom!'
+      : code === NEED_THOUGHT.sick ? 'I feel sick...'
+      : W.precip === 'snow' ? "I'm freezing out here." : W.precip ? "I'm getting soaked!" : 'This heat is unbearable.';
+    // The core already did think()'s bookkeeping (thoughtT, the log roll).
+    g.thought = text;
+    if (said & THOUGHT_LOGGED) logThought(park, g, text);
   }
-  g.happy = clamp(g.happy - drain * dt, 0, 100);
 
   if (g.litterT > 0) {
     g.litterT -= dt;
@@ -1079,14 +1079,12 @@ function onArrive(park: Park, g: Guest, here: number) {
     g.happy = Math.max(0, g.happy - litter * 0.8);
     if (litter >= 2 && rand(park) < 0.15) think(park, g, 'This path is disgusting.');
   }
-  // Nearby scenery cheers guests up.
-  let beauty = 0;
-  for (let y = g.y - 2; y <= g.y + 2; y++) {
-    for (let x = g.x - 2; x <= g.x + 2; x++) {
-      const o = objectAt(park, x, y);
-      if (o && SCENERY[o.kind]) beauty += SCENERY[o.kind].beauty;
-    }
-  }
+  // Nearby scenery cheers guests up (summed in the WASM core).
+  syncBeauty(park, park._objGen || 0, (i) => {
+    const o = park._byId.get(park._objAt[i]!);
+    return o ? SCENERY[o.kind]?.beauty ?? 0 : 0;
+  });
+  const beauty = core.beautyNear(g.x, g.y);
   if (beauty) {
     g.happy = Math.min(100, g.happy + Math.min(beauty, 12) * 0.06);
     if (beauty > 14 && rand(park) < 0.03) think(park, g, 'The scenery here is lovely!');

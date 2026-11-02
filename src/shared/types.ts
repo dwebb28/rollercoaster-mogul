@@ -546,6 +546,8 @@ export interface Park {
 
   // Transient (rebuilt on load, never saved)
   _objAt: Int32Array;
+  /** Bumped on every object placement change, so the WASM core knows to resync. */
+  _objGen?: number;
   _byId: Map<number, ParkObject>;
   _guestById: Map<number, Guest>;
   _events: SimEvent[];

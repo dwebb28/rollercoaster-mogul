@@ -5,10 +5,12 @@
 // the compiler insist the lists match types.ts: add a field there and you
 // must add it here.
 //
-// Positions (x, y, nx, ny, lx, ly, t) and `route` are not fields: they're
-// accessors on CoreWalker backed by core memory. See core.ts.
+// Positions (x, y, nx, ny, lx, ly, t) and `route`, and for guests the needs
+// (happy, hunger, thirst, bladder, energy, nausea, thoughtT, timeIn), are not
+// fields: they're accessors on CoreWalker / CoreGuest backed by core memory.
+// assignFields sets them through those accessors. See core.ts.
 
-import { CoreWalker } from './core.ts';
+import { CoreWalker, CoreGuest } from './core.ts';
 import type { WalkerInit } from './core.ts';
 import type {
   Guest, Staff, GuestTypeKey, CrimeKind, CriminalRecord, StaffRole,
@@ -22,7 +24,7 @@ function assignFields(target: object, f: object) {
   Object.assign(target, rest);
 }
 
-export class GuestWalker extends CoreWalker implements Guest {
+export class GuestWalker extends CoreGuest implements Guest {
   id!: number;
   name!: string;
   type!: GuestTypeKey;
@@ -33,7 +35,6 @@ export class GuestWalker extends CoreWalker implements Guest {
   queueT!: number;
   queueAt!: number;
   thought!: string;
-  thoughtT!: number;
   litterT!: number;
   decideIn!: number;
   ridden!: Record<number, number>;
@@ -41,15 +42,8 @@ export class GuestWalker extends CoreWalker implements Guest {
   gone!: boolean;
   leaving!: boolean;
   cash!: number;
-  happy!: number;
-  hunger!: number;
-  thirst!: number;
-  bladder!: number;
-  energy!: number;
-  nausea!: number;
   pref!: number;
   thrift!: number;
-  timeIn!: number;
   umbrella!: boolean;
   map!: boolean;
   souvenir!: boolean;

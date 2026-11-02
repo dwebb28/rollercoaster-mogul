@@ -150,3 +150,90 @@ test('routes live in the core and keep JS null-vs-empty semantics', async () => 
   assert.equal(core.routeLen(a._w), -1);
   core.clearRoute(a._w);
 });
+
+// The pre-WASM TypeScript needs tick (from updateGuest), kept as the
+// reference. `think` is inlined: quiet while thinking, else 12 s + log roll.
+function referenceNeeds(g, rng, dt, pace, T, W, umbrella, walking) {
+  const said = [];
+  const think = (code) => {
+    if (g.thoughtT > 0) return;
+    g.thoughtT = 12;
+    said.push(code | (referenceRand(rng) < 0.3 ? 0x100 : 0));
+  };
+  g.timeIn += dt;
+  g.thoughtT -= dt;
+  g.hunger = Math.min(100, g.hunger + 0.42 * T.hunger * dt * pace);
+  g.thirst = Math.min(100, g.thirst + 0.5 * W.thirst * dt * pace);
+  g.bladder = Math.min(100, g.bladder + 0.28 * dt * pace);
+  g.energy = Math.max(0, g.energy - 0.18 * T.energy * dt * pace);
+  g.nausea = Math.max(0, g.nausea - 1.2 * dt);
+  let drain = 0;
+  if (g.hunger > 85) { drain += 0.5; if (referenceRand(rng) < 0.02) think(1); }
+  if (g.thirst > 85) { drain += 0.5; if (referenceRand(rng) < 0.02) think(2); }
+  if (g.bladder > 90) { drain += 0.8; if (referenceRand(rng) < 0.02) think(3); }
+  if (g.nausea > 60) { drain += 0.4; if (referenceRand(rng) < 0.02) think(4); }
+  if (g.energy < 20) drain += 0.2;
+  if (W.happyDrain && !(W.umbrella && umbrella) && walking) {
+    drain += W.happyDrain;
+    if (referenceRand(rng) < 0.004) think(5);
+  }
+  g.happy = Math.max(0, Math.min(100, g.happy - drain * dt));
+  return said[0] ?? 0;
+}
+
+test('WASM guest needs match the TypeScript reference, thoughts and RNG included', async () => {
+  const { GuestWalker } = await import('../src/shared/walkers.ts');
+  const { freeWalker } = await import('../src/shared/core.ts');
+  const { GUEST_TYPES, WEATHER } = await import('../src/shared/options.ts');
+  const types = Object.values(GUEST_TYPES), weathers = Object.values(WEATHER);
+  const gen = { rngState: 99 };
+  const fields = ['happy', 'hunger', 'thirst', 'bladder', 'energy', 'nausea', 'thoughtT', 'timeIn'];
+  let thoughts = 0;
+  for (let n = 0; n < 300; n++) {
+    const start = Object.fromEntries(fields.map((f) => [f, referenceRand(gen) * 100]));
+    start.thoughtT = referenceRand(gen) < 0.5 ? 0 : start.thoughtT / 10;
+    const ref = { ...start };
+    const g = new GuestWalker({ id: n, name: 'N', ...start });
+    const js = { rngState: n * 7919 }, wasm = { rngState: n * 7919 };
+    const T = types[n % types.length], W = weathers[n % weathers.length];
+    const umbrella = n % 3 === 0, walking = n % 4 !== 0, pace = n % 5 === 0 ? 0.3 : 1;
+    for (let k = 0; k < 400; k++) {
+      const dt = k % 7 === 0 ? 0.25 : 0.1;
+      const drainIn = W.happyDrain && !(W.umbrella && umbrella) && walking ? W.happyDrain : 0;
+      const a = referenceNeeds(ref, js, dt, pace, T, W, umbrella, walking);
+      const b = core.guestNeeds(g._w, dt, pace, T.hunger, T.energy, W.thirst, drainIn, wasm);
+      assert.equal(b, a, `thought for guest ${n} tick ${k}`);
+      if (a) thoughts++;
+      assert.equal(wasm.rngState, js.rngState, `rng for guest ${n} tick ${k}`);
+      for (const f of fields) assert.equal(g[f], ref[f], `${f} for guest ${n} tick ${k}`);
+    }
+    freeWalker(g);
+  }
+  assert.ok(thoughts > 50, `the test should exercise thoughts (got ${thoughts})`);
+});
+
+test('WASM scenery beauty matches the TypeScript loop on every tile, after edits too', async () => {
+  const Sim = await import('../src/shared/sim.ts');
+  const { SCENERY } = await import('../src/shared/catalog.ts');
+  const { syncBeauty } = await import('../src/shared/core.ts');
+  const park = Sim.createPark('Beauty', 1234);
+  const reference = (x, y) => {
+    let b = 0;
+    for (let yy = y - 2; yy <= y + 2; yy++) for (let xx = x - 2; xx <= x + 2; xx++) {
+      const o = Sim.objectAt(park, xx, yy);
+      if (o && SCENERY[o.kind]) b += SCENERY[o.kind].beauty;
+    }
+    return b;
+  };
+  const check = (label) => {
+    syncBeauty(park, park._objGen, (i) => { const o = park._byId.get(park._objAt[i]); return o ? SCENERY[o.kind]?.beauty ?? 0 : 0; });
+    for (let y = 0; y < GRID; y++) for (let x = 0; x < GRID; x++) assert.equal(core.beautyNear(x, y), reference(x, y), `${label} at ${x},${y}`);
+  };
+  check('new park');
+  park.cash = 1e6;
+  assert.ok(Sim.build(park, 'fountain', 5, 5).ok);
+  assert.ok(Sim.build(park, 'statue', 0, 0).ok || Sim.build(park, 'statue', 1, 1).ok);
+  check('after building');
+  for (let y = 0; y < 12; y++) for (let x = 0; x < 12; x++) Sim.bulldoze(park, x, y);
+  check('after bulldozing');
+});
